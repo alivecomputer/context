@@ -271,6 +271,24 @@ Nothing gets deleted. Archive is graduation — the walnut served its purpose.
 
 ---
 
+## Third-Party Skill Overrides
+
+External plugins (superpowers, etc.) assume standard code project layouts — `docs/plans/`, `src/`, `tests/`. These paths don't exist in a World. The squirrel must intercept and reroute.
+
+**Before any skill creates a file, ask:** "Am I in a walnut? Where does this belong?"
+
+| Skill output | Route to instead |
+|-------------|-----------------|
+| `docs/plans/*.md` | `{active-walnut}/_core/_working/plans/` |
+| `docs/*.md` | `{active-walnut}/_core/_working/` |
+| Any file at World root | Determine the walnut it belongs to, route to `_core/_working/` or `_core/_references/` |
+
+**No orphan files at World root.** The only things at root level are the 5 ALIVE domain folders, `.claude/`, and dotfiles. Everything else belongs inside a walnut.
+
+If no walnut is active and a skill wants to write a file, ask the conductor where it should go before writing.
+
+---
+
 ## Creating a New Walnut
 
 When a new walnut needs to be created (from save routing, capture, or explicit request):
