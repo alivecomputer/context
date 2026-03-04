@@ -41,7 +41,7 @@ Save is NOT a termination. The session continues. Save can happen multiple times
 
 ### 1. Read First (understand before acting)
 
-Before presenting the stash or writing anything, the squirrel reads:
+Read these in parallel before presenting the stash or writing anything:
 
 - `_core/now.md` — what was the previous `next:`? What was the context?
 - `_core/log.md` — first ~100 lines (recent entries — what have previous sessions covered?)
@@ -55,38 +55,43 @@ This gives the squirrel the full picture BEFORE it starts routing. It knows what
 
 Then scan back through messages since last save for stash items the squirrel may have missed. Add them.
 
-### 3. Present Stash by Category
+### 3. Confirm Stash + Next (batched)
 
-Each category is a separate AskUserQuestion with options. Skip empty categories.
+Present the full stash visually in a single bordered block for readability, then batch confirmations into as few AskUserQuestion calls as possible.
 
-**Decisions:**
+**Display:**
 ```
-╭─ 🐿️ decisions (3)
+╭─ 🐿️ save checkpoint
+│
+│  decisions (3)
 │   1. Orbital test window confirmed for March 4  → nova-station
 │   2. Ada's team handles all telemetry review  → nova-station
 │   3. Festival submission over gallery showing  → glass-cathedral
-╰─
-```
-→ AskUserQuestion: "Confirm all 3" / "Review list" / "Drop some"
-
-**Tasks:**
-```
-╭─ 🐿️ tasks (2)
+│
+│  tasks (2)
 │   4. Book ground control sim for Feb 28  → nova-station
 │   5. Submit festival application by Mar 1  → glass-cathedral
-╰─
-```
-→ AskUserQuestion: "Confirm all 2" / "Edit or drop"
-
-**Notes:**
-```
-╭─ 🐿️ notes (1)
+│
+│  notes (1)
 │   6. Kai mentioned new radiation shielding vendor  → [[kai-tanaka]]
+│
+│  next: was "Review telemetry from test window"
 ╰─
 ```
-→ AskUserQuestion: "Confirm" / "Drop"
 
-**Insight Candidates:**
+**Then one AskUserQuestion call with up to 4 questions — skip empty categories:**
+
+| Question slot | Category | Options |
+|---|---|---|
+| 1 | Decisions | "Confirm all" / "Review list" / "Drop some" |
+| 2 | Tasks | "Confirm all" / "Edit or drop" |
+| 3 | Notes | "Confirm all" / "Drop some" |
+| 4 | Previous next: | "Completed" / "Move to tasks, new next" / "Still the priority" |
+
+The conductor can select an option OR use "Other" to provide free text — editing items, adding context, changing routing, or explaining what happened. Every question supports elaboration.
+
+**Insight candidates get a separate call** (if any exist) because they require a different decision — commit as evergreen vs just log it:
+
 ```
 ╭─ 🐿️ insight candidate
 │   "Orbital test windows only available Tue-Thu due to
@@ -97,23 +102,11 @@ Each category is a separate AskUserQuestion with options. Skip empty categories.
 ```
 → AskUserQuestion: "Commit as evergreen" / "Just log it"
 
-### 4. Check next:
-
-The squirrel already read now.md in step 1. It knows what `next:` was. Did we address it?
-
-```
-╭─ 🐿️ next is changing
-│  Previous: "Review telemetry from test window"
-│  → completed / deprioritised / still priority
-╰─
-```
-→ AskUserQuestion: "Completed" / "Move to tasks, new next" / "Still the priority" (+ Other)
-
 If previous next: was NOT completed and is being replaced, it moves to tasks.md with context.
 
-### 5. Write Log Entry
+### 4. Write Log Entry
 
-**Before writing anything else, prepend a signed entry to log.md.** This is the primary record of what happened. Use the log-entry template structure:
+**Before writing anything else, prepend a signed entry to log.md.** This is the primary record of what happened. The log entry uses the standard template:
 
 - What happened (brief narrative)
 - Decisions made (with rationale — WHY, not just WHAT)
@@ -121,28 +114,38 @@ If previous next: was NOT completed and is being replaced, it moves to tasks.md 
 - References captured
 - Next actions identified
 
-The log entry must be written BEFORE updating now.md. The log is truth. Everything else derives from it.
+**The log entry must be written BEFORE updating now.md. The log is truth. Everything else derives from it.**
 
-### 6. Route
+### 5. Prepare Remaining Content (in memory)
 
-For each confirmed stash item:
-- **Existing walnut** → prepend signed log entry
+**Re-read `_core/log.md` first ~150 lines** to ground the now.md synthesis in the actual written log. This captures the entry just prepended in step 4 plus the previous 3-4 entries — enough for a proper 3-5 entry synthesis. Don't rely on memory of what was read in step 1; the log has changed since then.
+
+Then prepare the content for all remaining files in memory:
+
+- **now.md** — full replacement: phase, health, next, updated, squirrel, context paragraph. The context paragraph synthesises the last 3-5 log entries (including the one just written) — what's been happening across sessions, not just this session. A new squirrel reading now.md should understand the full current situation without touching the log.
+- **tasks.md** — new tasks added, completed marked, in-progress updated
+- **Cross-walnut dispatches** — brief log entries for destination walnuts
+- **insights.md** — new evergreen entries (only if confirmed in step 3)
+
+**Protect existing now.md context.** If this session was minor but the existing now.md has rich context from a previous deep session — do NOT flatten it. Merge new information in. The test: is the new now.md MORE informative than the old one? If not, keep what was there and layer the new stuff on top.
+
+### 6. Write Remaining Files (parallel)
+
+Fire all remaining writes as parallel Edit calls in a single message. The content was prepared in step 5. These are independent of each other — they only depend on the log entry existing, which step 4 handled.
+
+Parallel writes:
+- `now.md` — full replacement with prepared content
+- `tasks.md` — updates with prepared content
+- `insights.md` — new evergreen entries (if any confirmed)
+- Cross-walnut dispatches — brief log entries to destination walnut logs (if any)
+- Cross-walnut task additions — tasks routed to other walnuts (if any)
+
+### 7. Route: New Walnuts (if needed)
+
+If any stash items require scaffolding new walnuts (new person, new venture/experiment), handle these after the parallel writes. These are heavier operations that may need their own confirmation.
+
 - **New person** → scaffold person walnut in `02_Life/people/`
-- **New venture/experiment** → scaffold walnut with _core/
-- **Task** → add to appropriate `_core/tasks.md`
-- **Insight** → add to appropriate `_core/insights.md` (only if confirmed as evergreen)
-- **Cross-walnut note** → dispatch to destination walnut log (brief entry, not full session)
-
-### 7. Update State
-
-The squirrel already read now.md and recent log entries in step 1. It has the full picture.
-
-**now.md is a synthesis of recent history, not a report on this session.** The context paragraph should cover the last 3-5 log entries worth of context — what's been happening across sessions, not just what happened right now. A new squirrel reading now.md should understand the full current situation without touching the log.
-
-**Protect existing context.** If this session was minor (quick chat, small update) but the existing now.md has rich context from a previous deep session — do NOT flatten it. Merge the new information in. The test: is the new now.md MORE informative than the old one? If not, keep what was there and layer the new stuff on top.
-
-- `now.md` — phase, health, next, updated, squirrel, context paragraph (synthesis of recent sessions)
-- `tasks.md` — add new, mark completed, update in-progress
+- **New venture/experiment** → scaffold walnut with `_core/`
 
 ### 8. Integrity Check
 
