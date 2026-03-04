@@ -102,23 +102,24 @@ These are the rules that make agents interchangeable. Any agent loading the squi
 
 The system separates what it controls from what the conductor controls.
 
-**System files** (always updated by plugin):
+**System files** (always updated by plugin — protected by Rules Guardian hook):
 - Hooks (scripts + hooks.json)
 - Skills (SKILL.md files)
+- Rules (`voice.md`, `behaviours.md`, `conventions.md`, `squirrels.md`, `conductor.md`, `world.md`)
 - CLAUDE.md
 
+The Rules Guardian hook blocks Edit/Write on all system files. This prevents accidental modification of files that would be overwritten on plugin update.
+
 **Conductor files** (never touched by plugin updates):
+- `.claude/rules/user-overrides.md` — the conductor's personal rule overrides
 - `preferences.yaml`
 - Walnut-level `_core/config.yaml`
 - Custom skills
 - All live context (everything outside `_core/`)
 - All walnut data (key.md, now.md, log.md, insights.md, tasks.md)
 
-**Hybrid files** (rules — version-tagged):
-- `behaviours.md`, `conventions.md`, `voice.md`, `squirrels.md`, `world.md`, `conductor.md`
-- Each has `version:` in frontmatter
-- On plugin update: compare checksums
-- If conductor modified the file → present diff, let them merge
-- If unmodified → update silently
+### Customising Rules
 
-The conductor's customisations are sacred. The system never overwrites their work without asking.
+The conductor customises system behaviour through `user-overrides.md`, not by editing plugin rules directly. This file lives at `.claude/rules/user-overrides.md` and is loaded alongside the plugin rules. Where overrides conflict with plugin defaults, the overrides take precedence.
+
+This separation means plugin updates never risk overwriting the conductor's customisations, and the conductor's preferences survive every update cleanly.

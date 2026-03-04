@@ -46,7 +46,7 @@ Not a search (that's find — searches content). Recall searches SESSIONS — wh
 
 Two tiers of data. Always start with tier 1. Go to tier 2 via revive.
 
-**Tier 1 — Squirrel Entries** (`_home/_squirrels/*.yaml`, with fallback to per-walnut `_core/_squirrels/*.yaml`)
+**Tier 1 — Squirrel Entries** (`.home/_squirrels/*.yaml`, with fallback to per-walnut `_core/_squirrels/*.yaml`)
 Structured, fast, indexed. Session ID, walnut, model, timestamps, stash items, working files, transcript path. Every squirrel leaves one of these.
 
 **Tier 2 — Session Transcripts** (path stored in squirrel YAML `transcript_path:`)
@@ -81,6 +81,31 @@ Show recent sessions across all walnuts.
 │  number to dive in, or describe what you're looking for.
 ╰─
 ```
+
+#### Unsigned Sessions
+
+After listing sessions, check for unsigned entries (`signed: false`) in `.home/_squirrels/`. These represent sessions that weren't properly closed — the conductor may have lost stash items.
+
+Surface them with a visual marker:
+
+```
+╭─ 🐿️ recall — recent sessions
+│
+│   1. 2a8c95e9  nova-station  today       opus-4-6
+│      System architecture, 8 skills built
+│
+│   2. a44d04aa  alive-gtm     yesterday   opus-4-6
+│      Website rebuild, brand locked
+│
+│   ⚠ c48b658d  (unsigned)    today       opus-4-6
+│     Session was not properly closed. Stash may be unrouted.
+│     → Review and sign off?
+│
+│  number to dive in, or describe what you're looking for.
+╰─
+```
+
+If the conductor selects an unsigned session, present the stash items from the YAML and offer to route them now (invoke save flow for those items) or dismiss (sign the entry as-is with `ended:` set to current time).
 
 ### Query (by walnut, date, topic)
 

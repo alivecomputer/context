@@ -1,5 +1,5 @@
 {
-  "description": "Walnut v0.1.0-beta — 10 namespaced command hooks. All prefixed walnut-*, all guarded to only fire inside ALIVE worlds.",
+  "description": "Walnut v0.1.0-beta — 11 namespaced command hooks. All prefixed walnut-*, all guarded to only fire inside ALIVE worlds. Session hooks read/write .home/_squirrels/.",
   "hooks": {
     "SessionStart": [
       {
@@ -40,6 +40,11 @@
           {
             "type": "command",
             "command": "bash ${CLAUDE_PLUGIN_ROOT}/hooks/scripts/walnut-log-guardian.sh",
+            "timeout": 5
+          },
+          {
+            "type": "command",
+            "command": "bash ${CLAUDE_PLUGIN_ROOT}/hooks/scripts/walnut-rules-guardian.sh",
             "timeout": 5
           }
         ]

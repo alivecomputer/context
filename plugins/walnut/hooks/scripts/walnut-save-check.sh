@@ -3,8 +3,11 @@
 # Walnut namespace guard — only fire inside an ALIVE world
 find_world() {
   local dir="${CLAUDE_PROJECT_DIR:-$PWD}"
-  while [ "$dir" \!= "/" ]; do
-    if [ -d "$dir/01_Archive" ] && [ -d "$dir/02_Life" ]; then return 0; fi
+  while [ "$dir" != "/" ]; do
+    if [ -d "$dir/01_Archive" ] && [ -d "$dir/02_Life" ]; then
+      WORLD_ROOT="$dir"
+      return 0
+    fi
     dir="$(dirname "$dir")"
   done
   return 1
@@ -13,7 +16,6 @@ find_world || exit 0
 
 # Hook 5: Save Check — Stop
 # Throttled warning about unsaved stash items. Max once per 10 minutes.
-# Checks stop_hook_active to prevent infinite loops.
 
 INPUT=$(cat)
 
@@ -34,15 +36,19 @@ if [ -f "$WARN_FILE" ]; then
   fi
 fi
 
-# Check if there's a recent squirrel entry with unsigned stash
-# This is a best-effort check — the real stash lives in conversation
+# Check .home/_squirrels/ for unsigned entry
 SESSION_ID=$(echo "$INPUT" | jq -r '.session_id // empty')
-CWD=$(echo "$INPUT" | jq -r '.cwd // empty')
-
-# Look for squirrel entry
+SQUIRRELS_DIR="$WORLD_ROOT/.home/_squirrels"
 ENTRY=""
-if [ -n "$CWD" ]; then
-  ENTRY=$(find "$CWD" -path "*/_core/_squirrels/${SESSION_ID}.yaml" -maxdepth 5 2>/dev/null | head -1)
+
+if [ -n "$SESSION_ID" ] && [ -d "$SQUIRRELS_DIR" ]; then
+  ENTRY="$SQUIRRELS_DIR/${SESSION_ID}.yaml"
+  [ ! -f "$ENTRY" ] && ENTRY=""
+fi
+
+# If no entry found, try grep for any unsigned
+if [ -z "$ENTRY" ] && [ -d "$SQUIRRELS_DIR" ]; then
+  ENTRY=$(grep -rl 'signed: false' "$SQUIRRELS_DIR/"*.yaml 2>/dev/null | head -1)
 fi
 
 # If no entry found or entry is already signed, allow stop
