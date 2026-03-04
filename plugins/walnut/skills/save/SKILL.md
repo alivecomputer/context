@@ -133,6 +133,31 @@ For each confirmed stash item:
 - **Insight** → add to appropriate `_core/insights.md` (only if confirmed as evergreen)
 - **Cross-walnut note** → dispatch to destination walnut log (brief entry, not full session)
 
+### 6b. Update Squirrel Entry
+
+Write the routed stash to the session's squirrel YAML in `.home/_squirrels/{session_id}.yaml`. This turns the YAML from a skeleton into an actual session record.
+
+Read the current YAML, then Edit to update:
+- `walnut:` — set to the active walnut name (or keep `null` if no walnut opened)
+- `stash:` — replace `[]` with the routed items, tagged by type and destination:
+
+```yaml
+stash:
+  - content: "Orbital test window confirmed for March 4"
+    type: decision
+    routed: nova-station
+  - content: "Book ground control sim for Feb 28"
+    type: task
+    routed: nova-station
+  - content: "Kai mentioned new radiation shielding vendor"
+    type: note
+    routed: kai-tanaka
+```
+
+- `working:` — list any `_working/` files created or modified this session
+
+This is cumulative across saves. Each save APPENDS new items to `stash:`, it doesn't replace. The YAML becomes the full record of everything routed during the session.
+
 ### 7. Update State
 
 The squirrel already read now.md and recent log entries in step 1. It has the full picture.
@@ -183,7 +208,10 @@ The check suggestion is lightweight — one line. If the conductor ignores it, n
 
 When the session truly ends (stop hook, explicit "I'm done done", conductor leaves):
 
-- Sign the squirrel entry with `ended:` timestamp and `signed: true`
+- Update the squirrel entry in `.home/_squirrels/{session_id}.yaml`:
+  - Set `ended:` to current timestamp
+  - Set `signed: true`
+  - Set `transcript_path:` — scan `~/.claude/projects/*/` for a JSONL file containing the session ID
 - Final `now.md` update
 - This is the ONLY time the entry gets signed
 

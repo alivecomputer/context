@@ -18,10 +18,11 @@ find_world() {
 
 WORLD_ROOT=$(find_world) || { echo "No ALIVE world found."; exit 0; }
 
-# Find the most recent unsigned squirrel entry (current session)
+# Find the most recent unsigned squirrel entry in .home/_squirrels/
+SQUIRRELS_DIR="$WORLD_ROOT/.home/_squirrels"
 LATEST_ENTRY=""
-if [ -d "$PWD/_core/_squirrels" ]; then
-  LATEST_ENTRY=$(grep -rl 'signed: false' "$PWD/_core/_squirrels/"*.yaml 2>/dev/null | head -1)
+if [ -d "$SQUIRRELS_DIR" ]; then
+  LATEST_ENTRY=$(grep -rl 'signed: false' "$SQUIRRELS_DIR/"*.yaml 2>/dev/null | head -1)
 fi
 
 if [ -n "$LATEST_ENTRY" ]; then
@@ -29,18 +30,32 @@ if [ -n "$LATEST_ENTRY" ]; then
   WALNUT=$(grep 'walnut:' "$LATEST_ENTRY" | awk '{print $2}')
   STASH=$(grep -A 100 'stash:' "$LATEST_ENTRY" | head -50)
 
-  # Re-read brief pack for context
+  # If a walnut is active, re-read its brief pack
   NOW_CONTENT=""
   KEY_CONTENT=""
-  if [ -f "$PWD/_core/now.md" ]; then
-    NOW_CONTENT=$(head -20 "$PWD/_core/now.md")
-  fi
-  if [ -f "$PWD/_core/key.md" ]; then
-    KEY_CONTENT=$(head -20 "$PWD/_core/key.md")
+  if [ "$WALNUT" != "null" ] && [ -n "$WALNUT" ]; then
+    # Search for the walnut's _core/ in common locations
+    for DOMAIN in 02_Life 04_Ventures 05_Experiments; do
+      WALNUT_CORE="$WORLD_ROOT/$DOMAIN/$WALNUT/_core"
+      if [ -d "$WALNUT_CORE" ]; then
+        [ -f "$WALNUT_CORE/now.md" ] && NOW_CONTENT=$(head -20 "$WALNUT_CORE/now.md")
+        [ -f "$WALNUT_CORE/key.md" ] && KEY_CONTENT=$(head -20 "$WALNUT_CORE/key.md")
+        break
+      fi
+      # Check nested walnuts one level deep
+      for PARENT in "$WORLD_ROOT/$DOMAIN"/*/; do
+        WALNUT_CORE="$PARENT$WALNUT/_core"
+        if [ -d "$WALNUT_CORE" ]; then
+          [ -f "$WALNUT_CORE/now.md" ] && NOW_CONTENT=$(head -20 "$WALNUT_CORE/now.md")
+          [ -f "$WALNUT_CORE/key.md" ] && KEY_CONTENT=$(head -20 "$WALNUT_CORE/key.md")
+          break 2
+        fi
+      done
+    done
   fi
 
   cat << EOF
-CONTEXT RESTORED after compaction. Session: $SESSION_ID | Walnut: $WALNUT
+CONTEXT RESTORED after compaction. Session: $SESSION_ID | Walnut: ${WALNUT:-none}
 
 Stash recovered:
 $STASH

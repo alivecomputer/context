@@ -1,6 +1,6 @@
 #!/bin/bash
 # Hook 1a: Session New — SessionStart (startup)
-# Creates squirrel entry, reads preferences, sets env vars, checks rule staleness.
+# Creates squirrel entry in .home/_squirrels/, reads preferences, sets env vars.
 
 set -euo pipefail
 
@@ -30,41 +30,34 @@ if [ -n "${CLAUDE_ENV_FILE:-}" ]; then
   echo "WALNUT_WORLD_ROOT=$WORLD_ROOT" >> "$CLAUDE_ENV_FILE"
 fi
 
-# Detect current walnut (if PWD is inside one)
-WALNUT_NAME=""
-WALNUT_PATH=""
-if [ -d "$PWD/_core" ]; then
-  WALNUT_PATH="$PWD"
-  WALNUT_NAME=$(basename "$PWD")
-elif [ -d "$(dirname "$PWD")/_core" ]; then
-  WALNUT_PATH="$(dirname "$PWD")"
-  WALNUT_NAME=$(basename "$WALNUT_PATH")
-fi
-
-# Create squirrel entry if walnut detected
-if [ -n "$WALNUT_PATH" ] && [ -d "$WALNUT_PATH/_core/_squirrels" ]; then
-  ENTRY_FILE="$WALNUT_PATH/_core/_squirrels/$SESSION_ID.yaml"
-  if [ ! -f "$ENTRY_FILE" ]; then
-    cat > "$ENTRY_FILE" << EOF
+# Always write squirrel entry to .home/_squirrels/
+SQUIRRELS_DIR="$WORLD_ROOT/.home/_squirrels"
+mkdir -p "$SQUIRRELS_DIR"
+ENTRY_FILE="$SQUIRRELS_DIR/$SESSION_ID.yaml"
+cat > "$ENTRY_FILE" << EOF
 session_id: $SESSION_ID
 runtime_id: squirrel.core@0.2
 engine: $MODEL
-walnut: $WALNUT_NAME
+walnut: null
 started: $TIMESTAMP
 ended: null
 signed: false
 stash: []
 working: []
 EOF
-  fi
-fi
 
 # Read preferences
-PREFS_FILE="$WORLD_ROOT/.claude/preferences.yaml"
+PREFS_FILE="$WORLD_ROOT/.home/preferences.yaml"
 if [ -f "$PREFS_FILE" ]; then
   PREFS=$(cat "$PREFS_FILE")
 else
-  PREFS="defaults (no preferences.yaml found)"
+  # Fallback to .claude/ location (pre-migration)
+  PREFS_FILE="$WORLD_ROOT/.claude/preferences.yaml"
+  if [ -f "$PREFS_FILE" ]; then
+    PREFS=$(cat "$PREFS_FILE")
+  else
+    PREFS="defaults (no preferences.yaml found)"
+  fi
 fi
 
 # Check rule staleness (compare plugin version vs project rules)
@@ -75,7 +68,7 @@ RULES_STATUS="ok"
 cat << EOF
 ALIVE session initialized. Session ID: $SESSION_ID
 World: $WORLD_ROOT
-Walnut: ${WALNUT_NAME:-none detected}
+Walnut: none detected
 Preferences: $PREFS
 Rules: $RULES_STATUS
 EOF

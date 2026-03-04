@@ -44,15 +44,13 @@ Not a search (that's find — searches content). Recall searches SESSIONS — wh
 
 ## How It Works
 
-Two tiers of data. Always start with tier 1. Go to tier 2 on request or when depth is needed.
+Two tiers of data. Always start with tier 1. Go to tier 2 via revive.
 
-**Tier 1 — Squirrel Entries** (`_core/_squirrels/*.yaml`)
-Structured, fast, indexed. Session ID, walnut, model, timestamps, stash items, working files, tags. Every squirrel leaves one of these.
+**Tier 1 — Squirrel Entries** (`.home/_squirrels/*.yaml`, with fallback to per-walnut `_core/_squirrels/*.yaml`)
+Structured, fast, indexed. Session ID, walnut, model, timestamps, stash items, working files, transcript path. Every squirrel leaves one of these.
 
-**Tier 2 — Session Transcripts** (platform-specific, path stored in squirrel YAML `transcript_path:`)
+**Tier 2 — Session Transcripts** (path stored in squirrel YAML `transcript_path:`)
 The full conversation. Every human message, every agent response, every tool call, every result. This is the deep context — the actual thinking, the back-and-forth, the nuance that didn't make it into the stash.
-
-The session-start hook discovers the transcript location and writes it to the squirrel YAML as `transcript_path:`. Recall reads this to find the full conversation. See the Transcript Discovery section below for platform-specific paths.
 
 ---
 
@@ -84,6 +82,31 @@ Show recent sessions across all walnuts.
 ╰─
 ```
 
+#### Unsigned Sessions
+
+After listing sessions, check for unsigned entries (`signed: false`) in `.home/_squirrels/`. These represent sessions that weren't properly closed — the conductor may have lost stash items.
+
+Surface them with a visual marker:
+
+```
+╭─ 🐿️ recall — recent sessions
+│
+│   1. 2a8c95e9  nova-station  today       opus-4-6
+│      System architecture, 8 skills built
+│
+│   2. a44d04aa  alive-gtm     yesterday   opus-4-6
+│      Website rebuild, brand locked
+│
+│   ⚠ c48b658d  (unsigned)    today       opus-4-6
+│     Session was not properly closed. Stash may be unrouted.
+│     → Review and sign off?
+│
+│  number to dive in, or describe what you're looking for.
+╰─
+```
+
+If the conductor selects an unsigned session, present the stash items from the YAML and offer to route them now (invoke save flow for those items) or dismiss (sign the entry as-is with `ended:` set to current time).
+
 ### Query (by walnut, date, topic)
 
 "What sessions touched nova-station this month?"
@@ -92,25 +115,122 @@ Show recent sessions across all walnuts.
 
 Searches tier 1 first (squirrel YAML frontmatter + stash content). If no match, offers tier 2 search (full transcript grep).
 
-### Deep Dive (single session)
+### Revive (single session)
 
-Pick a session → load its full context.
+The conductor selects a session. Show the tier 1 metadata, then offer the choice:
 
 ```
-╭─ 🐿️ recall — squirrel:a44d04aa
+╭─ 🐿️ recall — session:{id}
 │
-│  Walnut: alive-gtm
-│  Date: Feb 23, 10 hours
-│  Model: claude-opus-4-6
+│  Walnut: {walnut}
+│  Date: {date}, {duration}
+│  Model: {engine}
+│  Stash: {count} items
+│  Working: {files}
 │
-│  Stash: 14 items (all routed)
-│  Working: whitepaper-v0.3.md, alivecomputer.com
-│
-│  Tier 1 loaded. Load full transcript? (47,000 tokens)
+│  → Quick revive or heavy revive?
 ╰─
 ```
 
-If yes → reads the JSONL transcript, extracts the full conversation, rebuilds the context as if you were there.
+Use AskUserQuestion with two options:
+- **Quick revive** — "Structured briefing. One agent reads the full transcript and returns a handoff document covering what happened, why, and what comes next. ~2 minutes."
+- **Heavy revive** — "Full context transplant. Five parallel agents each extract a different dimension — narrative arc, decisions, verbatim quotes, technical substance, and open threads. Reconstructs the session's awareness in the current context window. ~5 minutes."
+
+Before dispatching either mode, resolve the transcript path (see Transcript Discovery below). If no transcript is found, tell the conductor and offer a tier-1-only summary from the YAML stash data instead.
+
+#### Quick Revive
+
+One agent. Reads the full JSONL transcript. Returns a structured handoff directly into the conversation.
+
+Dispatch a single Agent tool call with `subagent_type: "general-purpose"`. Use this prompt, substituting `{transcript_path}` with the resolved path:
+
+```
+You are reconstructing a previous work session from its full transcript.
+
+Read the JSONL transcript at: {transcript_path}
+
+The transcript is JSONL — one JSON object per line. Each line has a "type" field
+(user, assistant, tool_use, tool_result, progress, file-history-snapshot, etc.)
+and typically a "message" field with content. Focus on "user" and "assistant" types
+for the conversation, and "tool_use"/"tool_result" for understanding what work was done.
+
+For tool_use entries, note what tools were called (Read, Edit, Write, Bash, Grep, Glob,
+Agent, etc.) and what they operated on — this tells you what files were touched and what
+commands were run. For Agent tool calls, read the prompt to understand what subagents were
+dispatched and why.
+
+Produce a structured handoff using EXACTLY this format:
+
+# Session Revive: {Brief Description — one line}
+
+## What You Need to Know
+
+[1-2 paragraphs. Write this for a squirrel with ZERO memory of this session. What was the
+session about? What walnut was being worked on? What was the conductor trying to accomplish?
+What state were things in when the session ended? This section alone should give enough
+context to have a useful conversation about this work.]
+
+---
+
+## What Happened
+
+[Full narrative of the session. Not a bullet list — a story. Cover:
+- What problems were being solved and how they were approached
+- Files created or modified — FULL PATHS, and what changed in each
+- Code patterns, architectures, or designs established
+- Tools and commands run that produced significant results
+- Dead ends attempted — what was tried and why it didn't work (so the next session
+  doesn't repeat mistakes)
+- Subagents dispatched — what they were asked to do and what they found
+- The chronological progression: what happened first, what came next, how the work evolved
+
+Be specific. "Modified the config" is useless. "/Users/will/project/config.yaml — added
+retry logic with 3 attempts and exponential backoff because the API was rate-limiting" is
+useful.]
+
+## Why
+
+[Every decision made during the session, with:
+- The decision itself
+- The rationale — why this choice over alternatives
+- What alternatives were considered and why they were rejected
+- Constraints that drove the decision (technical, time, preference)
+- User preferences expressed (explicitly or implicitly)
+- Pivots — moments where the approach changed, and what triggered the change
+- Principles established — rules or patterns decided that should carry forward
+
+This section is critical. The log tells you WHAT was decided. This tells you WHY.]
+
+## What Comes Next
+
+[Exact numbered next steps, ordered by priority:
+1. Step one — with enough detail to execute without re-reading the transcript
+2. Step two — etc.
+
+Also include:
+- Unfinished work and its exact state (what's done, what remains)
+- Gotchas and warnings — things that will bite the next session if forgotten
+- Dependencies — things that need to happen before other things can proceed
+- Context that exists nowhere else — information that was discussed but not written
+  to any file, and would be lost without this extraction]
+
+Be thorough. Read the ENTIRE transcript. Do not stop early. If the session spanned
+multiple topics or phases, cover all of them.
+```
+
+Present the agent's output in a bordered block:
+
+```
+╭─ 🐿️ revive — quick
+│  [agent output]
+╰─
+```
+
+#### Heavy Revive
+
+Full context transplant. Five parallel agents each extract a different dimension from the transcript — narrative arc, decisions, verbatim quotes, technical substance, and open threads.
+
+When the conductor selects heavy revive, invoke the `walnut:heavy-revive` skill via the Skill tool, passing the resolved `{transcript_path}`. That skill contains the full agent prompts and dispatch instructions. Do NOT attempt to run heavy revive without loading that skill first.
 
 ### Combine (multiple sessions → one context pack)
 
@@ -163,28 +283,17 @@ Written to `_core/_working/recall-[date]-[topic].md` and optionally loaded direc
 
 ---
 
-## Reading Transcripts
-
-Session transcripts are JSONL — one JSON object per line. Each line is a message:
-
-```json
-{"role": "human", "content": "..."}
-{"role": "assistant", "content": "..."}
-{"role": "tool_use", "name": "Read", "input": {...}}
-{"role": "tool_result", "content": "..."}
-```
-
-The squirrel reads these and reconstructs the conversation. For large transcripts (50K+ tokens), it summarises by section rather than loading the full thing — key exchanges, decision points, research findings, creative moments.
-
-**Privacy note:** Transcripts live on the conductor's machine in Claude Code's project directory. They never leave. Recall reads them locally.
-
----
-
 ## Transcript Discovery
 
-Different platforms store session data in different places. The squirrel doesn't hardcode paths — it discovers them.
+Different platforms store session data in different places. The squirrel resolves the transcript path before dispatching revive agents.
 
-**Known locations:**
+**Resolution order:**
+
+1. Check `transcript_path:` in the squirrel YAML entry
+2. **Fallback:** Scan `~/.claude/projects/*/` for `{session_id}*.jsonl` — Claude Code names transcripts using the session UUID
+3. If no transcript found: tell the conductor, offer tier-1-only summary from the YAML stash data (no revive possible without a transcript)
+
+**Known platforms:**
 
 | Platform | Transcript path | Format |
 |----------|----------------|--------|
@@ -195,16 +304,9 @@ Different platforms store session data in different places. The squirrel doesn't
 | ChatGPT | Export only | JSON archive |
 | Local models | No standard | Agent-dependent |
 
-**How discovery works:**
-
-1. Session-start hook detects the platform (env vars, process name, known paths)
-2. Writes `transcript_path:` to the squirrel YAML entry
-3. Recall reads the squirrel entry → knows where to find the full conversation
-4. If the path doesn't exist or the platform is unknown → falls back to tier 1 (squirrel YAML only)
-
 **The squirrel entry is the universal layer.** It works across every platform. Transcripts are a bonus when the platform supports them. The system never breaks if transcripts aren't available — it just has less depth.
 
-**Future:** As more platforms standardise session export (AGENTS.md, OpenAI's agent protocol), transcript discovery gets easier. The discovery logic lives in the session-start hook and can be updated without changing the recall skill.
+**Privacy note:** Transcripts live on the conductor's machine in Claude Code's project directory. They never leave. Recall reads them locally.
 
 ---
 
