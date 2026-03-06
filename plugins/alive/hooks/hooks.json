@@ -41,11 +41,6 @@
             "type": "command",
             "command": "bash ${CLAUDE_PLUGIN_ROOT}/hooks/scripts/alive-log-guardian.sh",
             "timeout": 5
-          },
-          {
-            "type": "command",
-            "command": "bash ${CLAUDE_PLUGIN_ROOT}/hooks/scripts/alive-rules-guardian.sh",
-            "timeout": 5
           }
         ]
       },
