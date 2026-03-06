@@ -1,5 +1,5 @@
 {
-  "description": "ALIVE v0.1.0-beta — 11 namespaced command hooks. All prefixed alive-*, all guarded to only fire inside ALIVE worlds. Session hooks read/write .alive/_squirrels/.",
+  "description": "ALIVE v0.1.0-beta — 9 namespaced command hooks. All prefixed alive-*, all guarded to only fire inside ALIVE worlds. Session hooks read/write .alive/_squirrels/.",
   "hooks": {
     "SessionStart": [
       {
@@ -94,17 +94,6 @@
             "type": "command",
             "command": "bash ${CLAUDE_PLUGIN_ROOT}/hooks/scripts/alive-pre-compact.sh",
             "timeout": 10
-          }
-        ]
-      }
-    ],
-    "Stop": [
-      {
-        "hooks": [
-          {
-            "type": "command",
-            "command": "bash ${CLAUDE_PLUGIN_ROOT}/hooks/scripts/alive-save-check.sh",
-            "timeout": 5
           }
         ]
       }
