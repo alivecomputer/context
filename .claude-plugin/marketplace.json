@@ -6,8 +6,8 @@
   },
   "plugins": [
     {
-      "name": "walnut",
-      "source": "./plugins/walnut",
+      "name": "alive",
+      "source": "./plugins/alive",
       "description": "Personal private context infrastructure. Structured files, a caretaker runtime, and 9 skills that turn your machine into an alive computer.",
       "version": "0.1.0-beta",
       "category": "productivity"

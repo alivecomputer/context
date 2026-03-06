@@ -1,57 +1,90 @@
 ---
-name: walnut
+name: alive
 version: 0.1.0-beta
 description: Personal private context infrastructure. Structured files, a caretaker runtime, and 9 skills that turn your machine into an alive computer.
 author: Alive Computer
 homepage: https://alivecomputer.com
-repository: https://github.com/alivecomputer/walnut
+repository: https://github.com/alivecomputer/alive
 community: https://skool.com/worldbuilders
 license: MIT
 ---
 
-# Walnut
+# ALIVE
 
 **Personal Private Context Infrastructure**
 
-The successor to the personal computer starts with a file system. Walnut is personal private context infrastructure — structured files, a caretaker runtime (the Squirrel), and 9 skills that turn your machine into a sovereign context node.
+Your context is your property. ALIVE is the infrastructure that makes it real — structured files on your machine, a caretaker runtime (the Squirrel), and 9 skills that turn your computer into an alive computer.
+
+No cloud dependency. No vendor lock. Plain markdown files you own forever.
 
 ## Install
 
 ```bash
-claude plugin install alivecomputer/walnut
+claude plugin install alivecomputer/alive
 ```
 
 ## What You Get
 
-- **9 skills:** world, open, save, capture, find, housekeeping, config, publish, recall
-- **6 rules:** behaviours, conventions, voice, squirrels, world, worldbuilder
-- **10 hooks:** session lifecycle, log protection, archive enforcement, stash preservation
-- **Templates:** walnut scaffold, 7 companion types, squirrel entry
+- **9 skills:** world, open, save, capture, find, create, housekeeping, config, recall
+- **6 rules:** behaviors, conventions, voice, squirrels, world, human
+- **11 hooks:** session lifecycle, log protection, rule guarding, archive enforcement, stash preservation
+- **Templates:** walnut scaffold, 7 companion types, squirrel entry, world setup
 
 ## Skills
 
 | Skill | Command | What it does |
 |-------|---------|-------------|
-| World | `walnut:world` | Dashboard. See your whole world. |
-| Open | `walnut:open` | Open one walnut. Focus. Work. |
-| Save | `walnut:save` | Checkpoint. Route stash. Keep working. |
-| Capture | `walnut:capture` | Bring context in. Store and route. |
-| Find | `walnut:find` | Search across everything. |
-| Check | `walnut:check` | System health. One issue at a time. |
-| Config | `walnut:config` | Customize how it works. |
-| Publish | `walnut:publish` | Preview, publish, share to walnut.world. |
+| World | `/alive:world` | Dashboard. See your whole world. |
+| Open | `/alive:open` | Open one walnut. Focus. Work. |
+| Save | `/alive:save` | Checkpoint. Route stash. Keep working. |
+| Capture | `/alive:capture` | Bring context in. Store and route. |
+| Find | `/alive:find` | Search across everything. |
+| Create | `/alive:create` | Scaffold a new walnut. Map context sources. |
+| Housekeeping | `/alive:housekeeping` | System maintenance. One issue at a time. |
+| Config | `/alive:config` | Customize how it works. |
+| Recall | `/alive:recall` | Rebuild context from past sessions. |
 
 ## The Architecture
 
-Five layers. The alive computer.
+```
+PROPERTY (yours, portable, permanent):
+  Framework: ALIVE       5 domains — Archive, Life, Inputs, Ventures, Experiments
+  Unit: walnut            context container with _core/
+  Files: plain markdown   zero vendor lock
 
-| Layer | Component | Role |
-|-------|-----------|------|
-| You | The conductor | Intent, decisions, direction |
-| AI Model | Any engine | Interchangeable reasoning |
-| Squirrel | Caretaker runtime | Rules, skills, hooks, contract |
-| Walnut | Context layer | Structured, persistent, portable |
-| Hardware | Your machine | Eventually custom |
+RUNTIME (swappable):
+  Caretaker: squirrel     rules + skills + hooks
+  Model: any LLM          Claude, GPT, Gemini, local — interchangeable
+
+STORAGE (portable):
+  Default: local fs       your machine
+  Sync: iCloud / Dropbox  your cloud
+
+INTERFACE (adaptable):
+  Current: Claude Code    first adapter
+  Future: Cursor, Codex, Windsurf, standalone
+```
+
+## The Walnut
+
+A walnut is the unit of context. Any meaningful thing with its own identity, lifecycle, and history.
+
+```
+my-project/
+  _core/
+    key.md          what it is
+    now.md          where it is right now
+    log.md          where it's been
+    insights.md     what's known
+    tasks.md        what needs doing
+    _squirrels/     session history
+    _working/       drafts and versions
+    _references/    source material
+  docs/             your work (live context)
+  src/
+```
+
+Everything inside `_core/` is system. Everything outside is yours.
 
 ## License
 

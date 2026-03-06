@@ -1,0 +1,12 @@
+{
+  "name": "alive",
+  "version": "0.1.0-beta",
+  "description": "Personal private context infrastructure. The caretaker runtime for your ALIVE world.",
+  "author": {
+    "name": "Alive Computer",
+    "email": "hello@alivecomputer.com"
+  },
+  "homepage": "https://alivecomputer.com",
+  "repository": "https://github.com/alivecomputer/alive",
+  "license": "MIT"
+}

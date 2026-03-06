@@ -1,0 +1,63 @@
+# ALIVE Preferences
+# How the squirrel behaves. Toggles default ON — set to false to disable.
+# Session-start hook reads this file on boot.
+
+# ─── SQUIRREL BEHAVIOUR ──────────────────────────────────────────
+# spark: true                  # The Spark observation at walnut open
+# show_reads: true             # Show ▸ indicators when loading files
+# stash_checkpoint: true       # Shadow-write stash to squirrel YAML every 5 items / 20 min
+# always_watching: true        # Background instincts: people, working fits, capturable content
+# save_prompt: true            # Ask "anything else?" before save
+
+# ─── WORLD BEHAVIOUR ─────────────────────────────────────────────
+# health_nudges: true          # Surface stale walnut warnings proactively
+
+# ─── DISPLAY ─────────────────────────────────────────────────────
+# theme: vibrant               # vibrant | minimal | clean (companion app)
+
+# ─── VOICE ───────────────────────────────────────────────────────
+# World-level voice defaults. Walnut-level config in _core/config.yaml overrides.
+#
+# voice:
+#   character: [direct, warm, technical]
+#   blend: 70% sage, 30% rebel
+#   never_say: []
+
+# ─── CONTEXT SOURCES ─────────────────────────────────────────────
+# External context the system knows about. Used by alive:world (dashboard),
+# alive:recall (search), alive:find (query), and alive:capture (import).
+#
+# Each source has a type and optional sync method. Types:
+#   mcp_live        → live API via MCP server (reads on demand)
+#   sync_script     → pulled by a script on a schedule or manually
+#   static_export   → one-time export file (ChatGPT, Claude Desktop, etc.)
+#   markdown_vault  → existing markdown folder (Obsidian, etc.)
+#
+# context_sources:
+#   gmail:
+#     type: mcp_live
+#     status: active
+#     walnuts: all
+#   slack:
+#     type: sync_script
+#     script: .claude/scripts/slack-sync.mjs
+#     status: active
+#     walnuts: all
+#   chatgpt:
+#     type: static_export
+#     path: ~/exports/chatgpt/conversations.json
+#     status: indexed
+#     walnuts: all
+#   github:
+#     type: mcp_live
+#     status: active
+#     walnuts: all
+#
+# Scoping:
+#   walnuts: all          → available to every walnut
+#   walnuts: [nova, gtm]  → only when working in these walnuts
+#
+# Status:
+#   active    → live, queried on demand
+#   indexed   → imported and searchable
+#   available → registered but not yet imported
