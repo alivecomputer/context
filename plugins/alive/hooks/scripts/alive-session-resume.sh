@@ -27,11 +27,11 @@ elif [ -d "$SQUIRRELS_DIR" ]; then
 fi
 
 if [ -n "$ENTRY" ] && [ -f "$ENTRY" ]; then
-  ENTRY_SESSION_ID=$(grep '^session_id:' "$ENTRY" | head -1 | sed 's/session_id: *//')
-  WALNUT=$(grep '^walnut:' "$ENTRY" | head -1 | sed 's/walnut: *//')
+  ENTRY_SESSION_ID=$(grep '^session_id:' "$ENTRY" | head -1 | sed 's/session_id: *//' || true)
+  WALNUT=$(grep '^walnut:' "$ENTRY" | head -1 | sed 's/walnut: *//' || true)
 
-  # Extract stash items — lines starting with "- " after "stash:" until next top-level key
-  STASH=$(sed -n '/^stash:/,/^[a-z]/{/^  *- /p}' "$ENTRY" 2>/dev/null || true)
+  # Extract stash content lines from YAML
+  STASH=$(awk '/^stash:/{found=1; next} found && /^[a-z]/{found=0} found && /content:/{gsub(/.*content: *"?/,""); gsub(/"$/,""); print "- " $0}' "$ENTRY" 2>/dev/null || true)
   if [ -z "${STASH:-}" ]; then
     STASH="(empty)"
   fi

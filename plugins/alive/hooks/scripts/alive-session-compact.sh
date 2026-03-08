@@ -29,8 +29,8 @@ fi
 WALNUT=""
 STASH="(empty)"
 if [ -n "${ENTRY:-}" ] && [ -f "$ENTRY" ]; then
-  WALNUT=$(grep '^walnut:' "$ENTRY" | head -1 | sed 's/walnut: *//')
-  STASH=$(sed -n '/^stash:/,/^[a-z]/{/^  *- /p}' "$ENTRY" 2>/dev/null || true)
+  WALNUT=$(grep '^walnut:' "$ENTRY" | head -1 | sed 's/walnut: *//' || true)
+  STASH=$(awk '/^stash:/{found=1; next} found && /^[a-z]/{found=0} found && /content:/{gsub(/.*content: *"?/,""); gsub(/"$/,""); print "- " $0}' "$ENTRY" 2>/dev/null || true)
   if [ -z "${STASH:-}" ]; then
     STASH="(empty)"
   fi
