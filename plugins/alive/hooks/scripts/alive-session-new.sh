@@ -30,6 +30,25 @@ if [ -n "${CLAUDE_ENV_FILE:-}" ]; then
   echo "ALIVE_WORLD_ROOT=$WORLD_ROOT" >> "$CLAUDE_ENV_FILE"
 fi
 
+# Write squirrel entry to .alive/_squirrels/
+SQUIRRELS_DIR="$WORLD_ROOT/.alive/_squirrels"
+mkdir -p "$SQUIRRELS_DIR"
+ENTRY_FILE="$SQUIRRELS_DIR/$SESSION_ID.yaml"
+cat > "$ENTRY_FILE" << EOF
+session_id: $SESSION_ID
+runtime_id: squirrel.core@0.2
+engine: $HOOK_MODEL
+walnut: null
+started: $TIMESTAMP
+ended: null
+signed: false
+transcript: ${HOOK_TRANSCRIPT}
+cwd: ${HOOK_CWD}
+rules_loaded: 0
+stash: []
+working: []
+EOF
+
 # Resolve preferences
 source "$SCRIPT_DIR/alive-resolve-preferences.sh"
 PREFS=$(resolve_preferences "$WORLD_ROOT")
@@ -67,24 +86,14 @@ $(cat "$rule_file")"
   fi
 done
 
-# Write squirrel entry AFTER counting rules (avoids race with statusline)
-SQUIRRELS_DIR="$WORLD_ROOT/.alive/_squirrels"
-mkdir -p "$SQUIRRELS_DIR"
-ENTRY_FILE="$SQUIRRELS_DIR/$SESSION_ID.yaml"
-cat > "$ENTRY_FILE" << EOF
-session_id: $SESSION_ID
-runtime_id: squirrel.core@0.2
-engine: $HOOK_MODEL
-walnut: null
-started: $TIMESTAMP
-ended: null
-signed: false
-transcript: ${HOOK_TRANSCRIPT}
-cwd: ${HOOK_CWD}
-rules_loaded: $RULE_COUNT
-stash: []
-working: []
-EOF
+# Update squirrel YAML with actual rule count (was 0 at creation time)
+if [ -f "$ENTRY_FILE" ]; then
+  if sed --version >/dev/null 2>&1; then
+    sed -i "s/rules_loaded: 0/rules_loaded: $RULE_COUNT/" "$ENTRY_FILE"
+  else
+    sed -i '' "s/rules_loaded: 0/rules_loaded: $RULE_COUNT/" "$ENTRY_FILE"
+  fi
+fi
 
 # Preamble
 PREAMBLE="<EXTREMELY_IMPORTANT>
