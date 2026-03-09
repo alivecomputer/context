@@ -71,7 +71,7 @@ fi
 ACTIVITY_FILE="/tmp/alive-activity-${SESSION_ID}"
 if [ ! -f "$ACTIVITY_FILE" ]; then
   # ── BOOT MESSAGE ──
-  echo -e "${COPPER}🐿️${RESET} ${GREEN}${BOLD}squirrel ready to stash${RESET} ${DIM}|${RESET} ${DIM}${MODEL}${RESET} ${DIM}|${RESET} 🌰 ${DIM}${WALNUT_COUNT} walnuts available${RESET} ${DIM}|${RESET} ${COPPER}your context compounds from here${RESET}"
+  echo -e "${DIM}${MODEL}${RESET} ${DIM}|${RESET} ${COPPER}🐿️${RESET} ${GREEN}${BOLD}squirrel ready to stash${RESET} ${DIM}|${RESET} 🌰 ${DIM}${WALNUT_COUNT} walnuts available${RESET} ${DIM}|${RESET} ${COPPER}your context compounds from here${RESET}"
   exit 0
 fi
 
@@ -95,4 +95,4 @@ if [ "$CTX_PCT" != "?" ]; then
   fi
 fi
 
-echo -e "${COPPER}🐿️ ${SHORT_ID}${RESET} ${DIM}|${RESET} ${DIM}${MODEL}${RESET} ${DIM}|${RESET} ${CTX_COLOR}ctx:${CTX_PCT}%${RESET}${CTX_WARN} ${DIM}|${RESET} ${CYAN}${COST}${RESET} ${DIM}|${RESET} ${DIM}${EDITS} edits${RESET}"
+echo -e "${DIM}${MODEL}${RESET} ${DIM}|${RESET} ${COPPER}🐿️ ${SHORT_ID}${RESET} ${DIM}|${RESET} ${CTX_COLOR}ctx:${CTX_PCT}%${RESET}${CTX_WARN} ${DIM}|${RESET} ${CYAN}${COST}${RESET} ${DIM}|${RESET} ${DIM}${EDITS} edits${RESET}"
