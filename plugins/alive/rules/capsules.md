@@ -28,9 +28,10 @@ No `capsule_type:` field needed — the `goal:` field tells you which kind it is
 
 ```
 _core/_capsules/website-rebuild/
-  companion.md               <- The scannable index
-  v0.1.md, v0.2.md          <- Versioned drafts
-  raw/                       <- Source material
+  companion.md                          <- The scannable index
+  website-rebuild-draft-01.md           <- Working drafts
+  website-rebuild-draft-02.md
+  raw/                                  <- Source material
     2026-03-12-screenshot.png
 ```
 
@@ -89,10 +90,10 @@ started       has visual     shared        outputs graduated
 - **published** — shared externally. Companion tracks `published:` metadata.
 - **done** — outputs graduated to live context. Capsule is historical record.
 
-Version files inside the capsule:
-- `v0.x.md` — working drafts
-- `v0.x.html` — visual versions (optional, any draft can have one)
-- `v1.md` / `v1.html` — the graduated version
+Version files inside the capsule use the capsule name for self-documentation:
+- `{capsule-name}-draft-{nn}.md` — working drafts (e.g., `shielding-review-draft-01.md`)
+- `{capsule-name}-draft-{nn}.html` — visual versions (optional)
+- `{capsule-name}-v1.md` / `{capsule-name}-v1.html` — the graduated version
 
 ### Before Iterating
 
@@ -104,7 +105,7 @@ Every version after v0.1 should have a brief note in the capsule companion's `##
 
 ### Work capsule -> walnut root
 
-- Mechanical signal: `v1.md` (or `v1.html`) gets written
+- Mechanical signal: a `*-v1.md` (or `*-v1.html`) file gets written
 - Squirrel notices and asks: "v1 exists. Graduate this capsule?"
 - Human confirms -> folder moves from `_core/_capsules/` to walnut root
 - Status flips to `done` or `published` in companion

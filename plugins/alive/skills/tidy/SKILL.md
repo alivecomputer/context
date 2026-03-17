@@ -1,5 +1,5 @@
 ---
-description: "The world feels messy. Stale drafts, orphan files, overdue tasks, unsigned sessions — entropy is accumulating and needs to be addressed before it compounds. Scans squirrel activity across all walnuts, then surfaces issues one at a time."
+description: "The world feels messy. Stale drafts, orphan files, overdue tasks, unsaved sessions — entropy is accumulating and needs to be addressed before it compounds. Scans squirrel activity across all walnuts, then surfaces issues one at a time."
 user-invocable: true
 ---
 
@@ -86,20 +86,20 @@ Scan ALL walnuts' `_core/key.md` frontmatter (`links:` and `parent:` fields) AND
 
 Quick scan that every walnut has the full `_core/` skeleton:
 - 5 system files: `_core/key.md`, `_core/now.md`, `_core/log.md`, `_core/insights.md`, `_core/tasks.md`
-- 2 subdirectories: `_core/_squirrels/`, `_core/_capsules/`
+- 1 subdirectory: `_core/_capsules/`
 
 **Backward compat:** Some walnuts may have system files at the walnut root instead of `_core/`. Check `_core/` first, fall back to walnut root.
 
 Pass: all walnuts complete. Fail: list what's missing where.
 
-### 1e. Unsigned Squirrel Entries
+### 1e. Unsaved Squirrel Entries
 
-Scan `.alive/_squirrels/` (world-level) and per-walnut `_core/_squirrels/` across ALL walnuts for YAML files where `signed: false` or `signed:` is missing. Flag entries that have stash items — those contain unrouted decisions/tasks.
+Scan `.alive/_squirrels/` (world-level) for YAML files where `saves: 0` (never saved) or `signed: false` (legacy schema). Flag entries that have stash items — those contain unrouted decisions/tasks.
 
 Separate entries with stash (need review) from empty shells (safe to clear).
 
 ```
-╭─ 🐿️ tidy — unsigned sessions
+╭─ 🐿️ tidy — unsaved sessions
 │  3 sessions with unrouted stash:
 │   - berties / squirrel:67b1e464 — 4 stash items
 │   - alive-os / squirrel:45dcf404 — 6 stash items
@@ -113,9 +113,15 @@ Separate entries with stash (need review) from empty shells (safe to clear).
 
 Flag anything at the world root that isn't an ALIVE folder (`01_Archive/` through `05_Experiments/`), `.alive/`, `.claude/`, or dotfiles. Nothing should live loose at root.
 
+### 1g. Index Staleness
+
+Check if `.alive/_index.yaml` exists and when it was last generated. If it doesn't exist or is older than 7 days, offer to regenerate by running `generate-index.py`.
+
+Pass: index exists and is recent. Fail: missing or stale — offer to regenerate.
+
 ### Phase 1 Results
 
-Present all 6 results together. Passing checks get one line. Failures expand.
+Present all 7 results together. Passing checks get one line. Failures expand.
 
 ```
 ╭─ 🐿️ root audit — 6 checks
@@ -124,7 +130,7 @@ Present all 6 results together. Passing checks get one line. Failures expand.
 │  ✓ 1b. Inputs buffer — clean
 │  ⚠ 1c. Cross-walnut links — 2 undeclared connections
 │  ✓ 1d. Walnut integrity — all complete
-│  ⚠ 1e. Unsigned entries — 3 with stash, 13 empty
+│  ⚠ 1e. Unsaved entries — 3 with stash, 13 empty
 │  ⚠ 1f. Orphan files — 2 at root
 │
 │  3 issues to resolve.
@@ -137,7 +143,7 @@ Then ask which to fix:
 ╭─ 🐿️ root audit — which to fix?
 │
 │  1. 2 undeclared cross-walnut connections
-│  2. 3 unsigned sessions with stash (11 items total)
+│  2. 3 unsaved sessions with stash (11 items total)
 │  3. 2 orphan files at world root
 │
 │  → which ones? (numbers, "all", or "skip")
@@ -222,7 +228,7 @@ Pass: all files have frontmatter. Fail: list files without it.
 
 ### 3b. Walnut Skeleton
 
-Check the 5 system files exist (`_core/key.md`, `_core/now.md`, `_core/log.md`, `_core/insights.md`, `_core/tasks.md`) and the 2 subdirectories (`_core/_squirrels/`, `_core/_capsules/`).
+Check the 5 system files exist (`_core/key.md`, `_core/now.md`, `_core/log.md`, `_core/insights.md`, `_core/tasks.md`) and the subdirectory `_core/_capsules/`.
 
 Pass: all present. Fail: list what's missing.
 
@@ -308,11 +314,24 @@ Pass: nothing older than 30 days, no legacy naming. Fail: list stale capsules an
 ╰─
 ```
 
-### 3j. Tasks Overdue or Stale
+### 3j. Ungraduated Capsules
+
+Scan `_core/_capsules/` for any capsule folder containing a `*-v1.md` or `*-v1.html` file. If found and the capsule is still in `_core/_capsules/` (not yet moved to walnut root), surface for graduation.
+
+Pass: no v1 files in `_core/_capsules/`. Fail: list capsules ready to graduate.
+
+```
+╭─ 🐿️ tidy — graduation ready
+│  _core/_capsules/shielding-review/ has shielding-review-v1.md
+│  → graduate to walnut root / skip
+╰─
+```
+
+### 3k. Tasks Overdue or Stale
 
 Read `_core/tasks.md`. Find tasks marked `[ ]` or `[~]`.
 
-**Primary method:** Check `@session_id` attribution against `_core/_squirrels/` timestamps. Flag tasks with no progress in 2+ weeks.
+**Primary method:** Check `@session_id` attribution against `.alive/_squirrels/` timestamps. Flag tasks with no progress in 2+ weeks.
 
 **Fallback (when timestamps unavailable):** If tasks are tagged `@migrated` or have no attribution, fall back to content-based staleness detection:
 - Scan task text for dates, deadlines, or timeframes ("before Mar 18", "post-CNY", "this week")
@@ -407,4 +426,10 @@ If "done" — Final Summary.
 │
 │  7 resolved, 2 skipped. World is healthy.
 ╰─
+```
+
+After presenting the final summary, write the current date to `.alive/.last_tidy` so the session hook can track when tidy was last run:
+
+```bash
+date -u +"%Y-%m-%d" > "$WORLD_ROOT/.alive/.last_tidy"
 ```

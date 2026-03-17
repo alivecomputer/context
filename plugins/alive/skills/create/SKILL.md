@@ -21,7 +21,7 @@ templates/walnut/now.md            → now.md
 templates/walnut/log.md            → log.md
 templates/walnut/insights.md       → insights.md
 templates/walnut/tasks.md          → tasks.md
-templates/squirrel/entry.yaml      → _core/_squirrels/{session_id}.yaml
+templates/squirrel/entry.yaml      → .alive/_squirrels/{session_id}.yaml
 templates/capsule/companion.md     → _core/_capsules/{name}/companion.md
 ```
 
@@ -83,6 +83,37 @@ If type is project or campaign:
 ```
 
 To build the parent list: scan `04_Ventures/*/_core/key.md` and `05_Experiments/*/_core/key.md` — read frontmatter only (type, goal). Check `_core/key.md` first, fall back to walnut root. Present as options with goal as description.
+
+### Step 2b — Codebase Detection
+
+If the description mentions code, a repo, a website, an app, or anything that lives in a git repository:
+
+```
+╭─ 🐿️ sounds like this has a codebase. That right?
+│
+│  ▸ Does this walnut track a code repo?
+│  1. Yes
+│  2. No — context only
+╰─
+```
+
+If **yes**, ASK explicitly for each required field — do not infer from the description:
+
+```
+╭─ 🐿️ codebase details
+│
+│  ▸ What's the repo? (e.g., github.com/org/repo)
+│  ▸ Where's it cloned locally? (e.g., ~/code/my-project)
+│  ▸ Any of these apply?
+│    - GitHub account (if you use multiple)
+│    - Deploy platform (Vercel, Netlify, etc.)
+│    - Database (Supabase, Postgres, etc.)
+╰─
+```
+
+Even if the human gave repo/path in their description, confirm them here. This step is the only place codebase info is collected — don't skip it.
+
+Set `has_codebase: true` — Step 6 will use `templates/walnut/key-codebase.md` instead of the standard template.
 
 ### Step 3 — Pull the Thread
 
@@ -163,6 +194,7 @@ Present everything gathered so far:
 │  Parent:  none
 │  Rhythm:  weekly (default)
 │  People:  2 (Jax Stellara, Dr. Elara Voss)
+│  Repo:    github.com/org/flux-engine → ~/code/flux-engine  (if codebase)
 │  Context: 4 sources mapped (Gmail, Slack, Drive, Fathom)
 │
 │  → create / change name / change type / change rhythm / cancel
@@ -177,8 +209,8 @@ Follow the process from `world.md § Creating a New Walnut` exactly:
 
 1. Domain already determined (Step 1-2 above)
 2. Create folder at the resolved path (kebab-case name)
-3. Read each template from `templates/walnut/`, fill `{{placeholders}}`, write to `_core/` inside the walnut
-4. Create empty directories: `_core/_squirrels/`, `_core/_capsules/`
+3. Read each template from `templates/walnut/`, fill `{{placeholders}}`, write to `_core/` inside the walnut. If `has_codebase: true`, use `templates/walnut/key-codebase.md` instead of `templates/walnut/key.md` — fill the `dev:` block with repo, local_path, and any optional fields collected in Step 2b
+4. Create empty directory: `_core/_capsules/`
 5. Fill `_core/key.md` frontmatter: type, goal, created (today), rhythm, people (from Step 3), tags (from Step 3)
 6. Fill `_core/key.md` body: description from Step 3, `## Key People` with roles, `## Context Map` from Step 4, `## Connections` with any wikilinks to existing walnuts
 7. Write first log entry: "Walnut created. {goal}" — signed with session_id
@@ -194,7 +226,6 @@ Follow the process from `world.md § Creating a New Walnut` exactly:
 │  ▸   _core/log.md — first entry signed
 │  ▸   _core/insights.md — empty, ready
 │  ▸   _core/tasks.md — empty, ready
-│  ▸   _core/_squirrels/
 │  ▸   _core/_capsules/
 │
 │  Walnut is alive.
@@ -230,26 +261,7 @@ If **"Yes"** — NOW read `create/migrate.md` and follow it from the Entry Point
 
 ## Capsule Creation
 
-Create can also scaffold a capsule inside an existing walnut. When the human says "create a capsule" or when stash routing identifies a new body of work:
-
-```
-╭─ 🐿️ new capsule
-│
-│  Name:    shielding-review
-│  Walnut:  nova-station
-│  Goal:    Evaluate radiation shielding vendors for habitat module
-│  Path:    _core/_capsules/shielding-review/
-│
-│  → create / change name / cancel
-╰─
-```
-
-1. Read `templates/capsule/companion.md`
-2. Fill placeholders: goal, date, session_id
-3. Create `_core/_capsules/{name}/companion.md`
-4. Create `_core/_capsules/{name}/raw/` (empty)
-5. Update `_core/now.md` → set `capsule: {name}`
-6. Stash: "Created capsule: {name}" (type: note)
+Capsule scaffolding is handled by `alive:capsule`. When the human says "create a capsule" or when stash routing identifies a new body of work, invoke the capsule skill — it handles the full create flow including companion template, raw/ directory, and now.md update.
 
 ---
 
@@ -276,7 +288,6 @@ When a capsule grows too big for its container (needs its own sessions, log, lif
 | `{domain}/{name}/_core/log.md` | `templates/walnut/log.md` |
 | `{domain}/{name}/_core/insights.md` | `templates/walnut/insights.md` |
 | `{domain}/{name}/_core/tasks.md` | `templates/walnut/tasks.md` |
-| `{domain}/{name}/_core/_squirrels/` | Empty directory |
 | `{domain}/{name}/_core/_capsules/` | Empty directory |
 | Parent's `_core/key.md` | Updated `links:` field (if sub-walnut) |
 

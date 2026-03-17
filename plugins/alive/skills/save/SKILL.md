@@ -24,6 +24,8 @@ Read these in parallel before presenting the stash or writing anything:
 
 **Backward compat:** Check `_core/` first for system files, fall back to walnut root.
 
+**Standalone session (no walnut loaded):** If no walnut was opened this session, the squirrel still has a stash to route. Ask: "Which walnut does this session belong to?" If the human names one, load its core files and proceed normally. If truly walnut-less (system maintenance, cross-walnut work, one-off task), write the log entry to `.alive/log.md` instead of a walnut log. Same format, same signing. The squirrel YAML at `.alive/_squirrels/` keeps `walnut: null`.
+
 This gives the squirrel the full picture BEFORE it starts routing. It knows what was expected this session, which capsule was active, what previous sessions accomplished, and what the task state is. This makes everything that follows smarter — better routing suggestions, better `_core/now.md` synthesis, better log entries that don't duplicate what's already recorded.
 
 ### 2. Pre-Save Scan
@@ -163,6 +165,7 @@ Not a vibe check. A concrete checklist. Run through each:
 - [ ] **Insights** — did any standing domain knowledge surface that should be proposed as evergreen?
 - [ ] **People** — was anyone mentioned who should have context dispatched to their walnut?
 - [ ] **Capsule status** — should any capsule advance? (draft → prototype when it has a visual; prototype → published when shared externally; published → done when outputs graduated)
+- [ ] **Capsule shared** — was a capsule shared with someone this session? If so, update the companion's `shared:` frontmatter (to, method, date, version) and stash a dispatch to the person's walnut.
 
 If anything fails, fix it before completing the save. This is the last gate.
 

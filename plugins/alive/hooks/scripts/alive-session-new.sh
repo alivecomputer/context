@@ -112,10 +112,12 @@ engine: $HOOK_MODEL
 walnut: null
 started: $TIMESTAMP
 ended: null
-signed: false
+saves: 0
+last_saved: null
 transcript: ${HOOK_TRANSCRIPT}
 cwd: ${HOOK_CWD}
 rules_loaded: $RULE_COUNT
+tags: []
 stash: []
 working: []
 EOF
@@ -131,6 +133,47 @@ if [ -f "$STATUSLINE_SRC" ]; then
   if [ ! -f "$STATUSLINE_DST" ] || ! cmp -s "$STATUSLINE_SRC" "$STATUSLINE_DST"; then
     cp "$STATUSLINE_SRC" "$STATUSLINE_DST"
     chmod +x "$STATUSLINE_DST"
+  fi
+fi
+
+# Read world key (.alive/key.md) for injection
+WORLD_KEY_CONTENT=""
+WORLD_KEY_FILE="$WORLD_ROOT/.alive/key.md"
+if [ -f "$WORLD_KEY_FILE" ]; then
+  WORLD_KEY_CONTENT=$(cat "$WORLD_KEY_FILE")
+fi
+
+# Capsule awareness injection
+CAPSULE_AWARENESS="<CAPSULE_AWARENESS>
+If you detect work with a deliverable or future audience — drafting for someone, iterating a document, building something to ship, send, or reference later — check: is there an active capsule? If not, invoke the capsule skill to offer creation.
+
+Detection should be broad. Prefer capsules over loose files. The user doesn't have to call /alive:capsule — you detect and offer.
+</CAPSULE_AWARENESS>"
+
+# Tidy nudge — check .alive/.last_tidy timestamp file
+TIDY_NUDGE=""
+LAST_TIDY_FILE="$WORLD_ROOT/.alive/.last_tidy"
+if [ -f "$LAST_TIDY_FILE" ]; then
+  LAST_TIDY_DATE=$(cat "$LAST_TIDY_FILE" | tr -d '[:space:]')
+  if command -v python3 &>/dev/null && [ -n "$LAST_TIDY_DATE" ]; then
+    DAYS_SINCE=$(python3 -c "
+from datetime import datetime
+try:
+    ts = '$LAST_TIDY_DATE'.split('+')[0].split('T')[0]
+    dt = datetime.strptime(ts, '%Y-%m-%d')
+    print((datetime.now() - dt).days)
+except:
+    pass
+" 2>/dev/null || true)
+    if [ -n "$DAYS_SINCE" ] && [ "$DAYS_SINCE" -gt 7 ]; then
+      TIDY_NUDGE="Last tidy: ${DAYS_SINCE} days ago. Consider running /alive:tidy."
+    fi
+  fi
+else
+  # No tidy record at all — nudge if the world has been around a while
+  YAML_COUNT=$(find "$WORLD_ROOT/.alive/_squirrels" -name "*.yaml" -type f 2>/dev/null | wc -l | tr -d ' ')
+  if [ "$YAML_COUNT" -gt 5 ]; then
+    TIDY_NUDGE="No record of /alive:tidy being run. Consider running it to validate your world."
   fi
 fi
 
@@ -167,12 +210,22 @@ Model: $HOOK_MODEL
 $PREFS
 Rules: ${RULE_COUNT} loaded (${RULE_NAMES})"
 
-# Escape and combine
+# Escape and combine — world key + capsule awareness + tidy nudge + rules
+WORLD_KEY_ESCAPED=$(escape_for_json "$WORLD_KEY_CONTENT")
+CAPSULE_ESCAPED=$(escape_for_json "$CAPSULE_AWARENESS")
+TIDY_ESCAPED=""
+if [ -n "$TIDY_NUDGE" ]; then
+  TIDY_ESCAPED=$(escape_for_json "$TIDY_NUDGE")
+fi
 SESSION_MSG_ESCAPED=$(escape_for_json "$SESSION_MSG")
 PREAMBLE_ESCAPED=$(escape_for_json "$PREAMBLE")
 RUNTIME_ESCAPED=$(escape_for_json "$RUNTIME_RULES")
 
-CONTEXT="${SESSION_MSG_ESCAPED}\n\n${PREAMBLE_ESCAPED}\n\n${RUNTIME_ESCAPED}"
+CONTEXT="${SESSION_MSG_ESCAPED}\n\n${WORLD_KEY_ESCAPED}\n\n${CAPSULE_ESCAPED}"
+if [ -n "$TIDY_ESCAPED" ]; then
+  CONTEXT="${CONTEXT}\n\n${TIDY_ESCAPED}"
+fi
+CONTEXT="${CONTEXT}\n\n${PREAMBLE_ESCAPED}\n\n${RUNTIME_ESCAPED}"
 
 # Output JSON with additionalContext
 cat <<HOOKEOF

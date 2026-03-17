@@ -44,17 +44,19 @@ Read in order (show `▸` reads):
 2. `_core/now.md` — where it is right now (phase, active capsule, next action)
 3. `_core/insights.md` — frontmatter scan (what domain knowledge sections exist)
 4. `_core/tasks.md` — current task queue
-5. `_core/_squirrels/` — any unsigned entries with stash?
+5. `.alive/_squirrels/` — any unsaved entries with stash for this walnut?
 6. `_core/_capsules/` — **companion frontmatter only** (scan what capsules exist, their status and goal — don't read full companions yet)
 
 **Backward compat:** Check `_core/` first for system files, fall back to walnut root. If `_core/_capsules/` doesn't exist, fall back to scanning `_core/_working/` and `_core/_references/` instead.
+
+**Update squirrel YAML immediately:** Find the current session's YAML in `.alive/_squirrels/` (most recently created file, or match `ALIVE_SESSION_ID` env var). Set `walnut:` to the loaded walnut name.
 
 ```
 ▸ _core/key.md        Nova Station — orbital tourism, weekly rhythm, 3 people
 ▸ _core/now.md        Phase: testing. Capsule: shielding-review. Next: review telemetry.
 ▸ _core/insights.md   3 sections (engineering, regulatory, partners)
 ▸ _core/tasks.md      2 active, 1 urgent, 4 to do
-▸ _core/_squirrels/   1 unsigned entry (empty — safe to clear)
+▸ .alive/_squirrels/  1 unsaved entry (empty — safe to clear)
 ▸ _core/_capsules/    3 capsules (shielding-review: draft, launch-checklist: prototype, safety-brief: done)
 ```
 
@@ -144,7 +146,48 @@ If there's not enough context for a genuine observation, skip it. An obvious one
 
 ---
 
-## Then Ask
+## Capsule Prompt
+
+After the Spotted observation, prompt with capsule awareness:
+
+```
+╭─ 🐿️ nova-station
+│  Goal:    Build the first civilian orbital tourism platform
+│  Phase:   testing
+│  Next:    Review telemetry from test window
+│  Capsule: shielding-review (draft, draft-02)
+│
+│  ▸ What are you working on?
+│  1. Continue from next (review telemetry)
+│  2. Continue capsule (shielding-review)
+│  3. Start something new (creates capsule)
+│  4. Load full context (log entries, linked walnuts)
+│  5. Just chat
+```
+
+If the human picks "start something new" → invoke `alive:capsule` (create operation).
+
+If no active capsule exists, show options 1, 3, 4, 5 only (skip option 2).
+
+**Graduation check:** When scanning `_core/_capsules/` companion frontmatter (Tier 1), also check for files matching `*-v1.md` in any capsule folder. If found and the capsule is still in `_core/_capsules/`:
+
+```
+╭─ 🐿️ graduation ready
+│  shielding-review has a v1. Graduate to walnut root?
+│
+│  ▸ Graduate?
+│  1. Yes — move to walnut root
+│  2. Not yet
+╰─
+```
+
+If yes → invoke `alive:capsule` (graduate operation).
+
+---
+
+## Then Ask (legacy — replaced by Capsule Prompt above)
+
+If the Capsule Prompt section is used, skip this. This section remains for backward compatibility with walnuts that don't use capsules.
 
 ```
 ╭─ 🐿️ nova-station
@@ -193,7 +236,7 @@ If another walnut becomes relevant during work ("this references [[glass-cathedr
 
 ## Unsigned Entry Recovery
 
-If `_core/_squirrels/` has an unsigned entry with stash items from a previous session:
+If `.alive/_squirrels/` has an unsaved entry with stash items from a previous session:
 
 ```
 ╭─ 🐿️ previous session had 6 stash items that were never saved.

@@ -106,6 +106,27 @@ This applies to ALL write paths — skills, save protocol, manual creation, capt
 
 If no template exists for the file type, that's fine — write freely. But if one exists, read it first.
 
+### 8. Verify Past Context
+
+Never state what happened in prior sessions from memory. Never trust a broad search when the log exists.
+
+**Your assertions:** If you're about to reference a past decision, previous work, or any prior session context — you don't know until you've checked.
+
+**Their questions:** If the human asks about a past decision, conversation, action, or anything that happened in a previous session — check before answering.
+
+**The method is non-negotiable:**
+
+1. You already know the walnut path — it's in the world key (injected at session start) or from the walnut you loaded. Don't search for it.
+2. Dispatch a subagent with this exact instruction: "Read `{walnut-path}/_core/log.md`. Grep for [keywords]. Return matching log entries with dates, session IDs, and the full decision/context paragraph. If no match, say so explicitly." Give the subagent the full absolute path.
+3. The subagent reads `_core/log.md` directly — not a broad walnut search, not file scanning, not guessing. The log is the source of truth.
+4. Never load the full log into main context yourself. If the subagent didn't find it, dispatch another with different keywords. Don't fall back to reading the log in the main session.
+
+Same standard as "read before speaking" — extended to history. If you haven't searched the log, say "let me check the log" instead of guessing.
+
+### 9. Notice World Key Drift
+
+If the world key (`.alive/key.md`, injected at session start) is out of sync with what you're seeing — a person not listed in `## Key People`, a stale connection, outdated integrations — flag it. Offer to fix inline or suggest `alive:tidy`.
+
 ---
 
 ## Core Read Sequence (every session, non-negotiable)
@@ -117,7 +138,7 @@ At the start of EVERY session, before doing anything else, the squirrel reads th
 3. `_core/tasks.md` — full file (work queue)
 4. `_core/insights.md` — frontmatter only (what domain knowledge sections exist)
 5. `_core/log.md` — frontmatter first (entry count, summary), then first ~100 lines to catch recent entries (they're prepended, so the top of the file IS the most recent). Read deeper if context demands it.
-6. `_core/_squirrels/` — scan for unsigned entries
+6. `.alive/_squirrels/` — scan for unsaved entries
 7. `_core/_capsules/` — **companion frontmatter only** (what capsules exist, their status and goal — don't read full companions)
 
 **Backward compat:** Check `_core/` first for system files. Fall back to walnut root for migrated/flat walnuts.
@@ -237,7 +258,7 @@ SESSION START
   ▼
 OPEN
   │
-  ├─ Read _core/key → _core/now → _core/insights (frontmatter) → _core/tasks → _core/_squirrels/ → _core/_capsules/
+  ├─ Read _core/key → _core/now → _core/insights (frontmatter) → _core/tasks → .alive/_squirrels/ → _core/_capsules/
   ├─ Show ▸ reads
   ├─ The Spark (one observation)
   ├─ "Load full context, or just chat?"
@@ -332,7 +353,7 @@ Four instincts running in the background:
 
 **People.** New info about someone — stash it tagged with their walnut. If they don't have a walnut yet, note it at save.
 
-**Capsule fits.** Something in conversation connects to an active capsule or could seed a new one — flag it.
+**Capsule fits.** Does the current work have a deliverable or a future audience? If yes and no capsule is active, offer to create one. The spectrum: one-off work (this session only, no deliverable) → capsule (deliverable, may span sessions, has an audience) → walnut (own lifecycle, own people). Prefer capsules over loose files. If the capsule skill exists, invoke it.
 
 **Capturable content.** External content appears that should be in the system — offer to capture (routes to active capsule or creates new one).
 
@@ -357,7 +378,7 @@ Known destinations come from _core/key.md people/links (loaded in brief pack). U
 
 ## Squirrel Entries
 
-One YAML file per session in `_core/_squirrels/` (walnut-level) or `.alive/_squirrels/` (world-level). Created by session-start hook, signed at exit.
+One YAML file per session in `.alive/_squirrels/` (world-level). Created by session-start hook, updated at save.
 
 ```yaml
 session_id: 2a8c95e9
@@ -376,7 +397,7 @@ stash:
     type: note
     routed: ryn-okata
 working:
-  - _core/_capsules/shielding-review/v0.2.md
+  - _core/_capsules/shielding-review/shielding-review-draft-02.md
 ```
 
 Entries accumulate. They're tiny and scannable. Don't archive them.
@@ -385,7 +406,7 @@ Entries accumulate. They're tiny and scannable. Don't archive them.
 
 ## Unsigned Entry Recovery
 
-If `_core/_squirrels/` has an unsigned entry with stash items from a previous session:
+If `.alive/_squirrels/` has an unsaved entry with stash items from a previous session:
 
 ```
 ╭─ 🐿️ previous session had 6 stash items that were never saved.

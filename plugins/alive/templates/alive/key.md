@@ -43,6 +43,17 @@ links: []
      - **Mira Solaris** — co-founder, handles partnerships. [[mira-solaris]]
 -->
 
+## Credentials
+
+<!-- Where API keys and tokens are stored. Set during onboarding.
+     Never store actual key values here — only env var names.
+
+env_file: ~/.env
+
+| Service | Env Var | Added |
+|---------|---------|-------|
+-->
+
 ## Connections
 
 <!-- Top-level walnuts. Auto-populated as walnuts are created.

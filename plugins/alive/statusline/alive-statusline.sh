@@ -41,6 +41,7 @@ YELLOW="\033[33m"
 RED="\033[31m"
 CYAN="\033[36m"
 COPPER="\033[38;5;173m"
+STRIKE="\033[9m"
 
 # Find ALIVE world root
 WORLD_ROOT=""
@@ -113,6 +114,21 @@ fi
 
 # ── WORKING STATUSLINE ──
 
+# Detect active walnut from squirrel YAML
+ACTIVE_WALNUT=""
+if [ -f "$ENTRY" ]; then
+  # Check walnut: field first (set by save), then repo_context: (set by repo detection)
+  ACTIVE_WALNUT=$(grep '^walnut:' "$ENTRY" 2>/dev/null | sed 's/walnut: *//' | tr -d ' ')
+  if [ "$ACTIVE_WALNUT" = "null" ] || [ -z "$ACTIVE_WALNUT" ]; then
+    ACTIVE_WALNUT=$(grep '^repo_context:' "$ENTRY" 2>/dev/null | sed 's/repo_context: *//' | tr -d ' ')
+  fi
+fi
+
+WALNUT_DISPLAY=""
+if [ -n "$ACTIVE_WALNUT" ]; then
+  WALNUT_DISPLAY=" ${DIM}|${RESET} ${GREEN}${ACTIVE_WALNUT}${RESET}"
+fi
+
 # Context percentage color + warning
 CTX_COLOR="$GREEN"
 CTX_WARN=""
@@ -128,4 +144,4 @@ if [ "$CTX_PCT" != "?" ]; then
   fi
 fi
 
-echo -e "${DIM}${MODEL}${RESET} ${DIM}|${RESET} ${COPPER}🐿️ ${SHORT_ID}${RESET} ${DIM}|${RESET} ${CTX_COLOR}ctx:${CTX_PCT}%${RESET}${CTX_WARN} ${DIM}|${RESET} ${CYAN}${COST}${RESET}"
+echo -e "${DIM}${MODEL}${RESET} ${DIM}|${RESET} ${COPPER}🐿️ ${SHORT_ID}${RESET}${WALNUT_DISPLAY} ${DIM}|${RESET} ${CTX_COLOR}ctx:${CTX_PCT}%${RESET}${CTX_WARN} ${DIM}|${RESET} ${DIM}${STRIKE}${COST}${RESET}"

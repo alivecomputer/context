@@ -178,6 +178,24 @@ What's been happening across the world. A pulse check.
 
 ---
 
+## Index Freshness Check
+
+After rendering the dashboard, check if `.alive/_index.yaml` exists and is recent (modified within the last 7 days). If stale or missing:
+
+```
+╭─ 🐿️ index stale
+│  .alive/_index.yaml is 12 days old.
+│
+│  ▸ Regenerate?
+│  1. Yes — run generate-index.py
+│  2. Skip
+╰─
+```
+
+If yes → run the index generator to rebuild `_index.yaml` from all walnut frontmatter. The index is always derived, never manually maintained.
+
+---
+
 ## After Dashboard
 
 - **Number** → open that walnut (invoke `alive:load`)

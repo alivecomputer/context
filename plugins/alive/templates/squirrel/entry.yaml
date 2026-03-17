@@ -1,11 +1,14 @@
 session_id: {{session_id}}
-runtime_id: squirrel.core@0.2
+runtime_id: squirrel.core@1.0
 engine: {{engine}}
 walnut: {{walnut}}
 started: {{timestamp}}
 ended: null
 saves: 0
 last_saved: null
+transcript: {{transcript}}
+cwd: {{cwd}}
+rules_loaded: {{rules_loaded}}
 tags: []
 stash: []
 working: []

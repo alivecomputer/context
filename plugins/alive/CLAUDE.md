@@ -23,7 +23,7 @@ When a walnut is active, read these in order before responding:
 3. `_core/tasks.md` — full
 4. `_core/insights.md` — frontmatter
 5. `_core/log.md` — frontmatter, then first ~100 lines
-6. `_core/_squirrels/` — scan for unsigned
+6. `.alive/_squirrels/` — scan for unsaved entries
 7. `_core/_capsules/` — companion frontmatter only
 9. `.alive/preferences.yaml` — full (if exists)
 

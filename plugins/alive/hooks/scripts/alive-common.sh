@@ -60,6 +60,25 @@ find_world() {
     check="$(dirname "$check")"
   done
 
+  # Config file fallback — world-root stored at install time
+  local config_file="${HOME}/.config/alive/world-root"
+  if [ -f "$config_file" ]; then
+    local stored_root
+    stored_root=$(cat "$config_file" | tr -d '[:space:]')
+    if [ -d "$stored_root/01_Archive" ] && [ -d "$stored_root/02_Life" ]; then
+      WORLD_ROOT="$stored_root"
+      return 0
+    fi
+  fi
+
+  # Env var fallback — set by previous session hook
+  if [ -n "${ALIVE_WORLD_ROOT:-}" ]; then
+    if [ -d "$ALIVE_WORLD_ROOT/01_Archive" ] && [ -d "$ALIVE_WORLD_ROOT/02_Life" ]; then
+      WORLD_ROOT="$ALIVE_WORLD_ROOT"
+      return 0
+    fi
+  fi
+
   # Cowork fallback — user folder is mounted under $HOME/mnt/<name>/
   if [ "${CLAUDE_CODE_IS_COWORK:-}" = "1" ]; then
     local mnt_dir="${HOME:-$dir}/mnt"

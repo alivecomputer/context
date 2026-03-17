@@ -270,6 +270,12 @@ All sources start with `status: available` unless they're MCP-based and the MCP 
 
 Do NOT ask about voice or preferences in the terminal flow. Defaults are fine. The human can customize later via `/alive:tune`.
 
+#### B6b. Credential storage (optional)
+
+> AskUserQuestion: "Where do you keep API keys and tokens? (default: ~/.env)"
+
+Record the path for the `## Credentials` section in `.alive/key.md`. If they press enter or skip, use `~/.env`.
+
 #### B7. Scaffold
 
 Execute the scaffolding sequence (see **Scaffolding Procedure** below) using collected data.
@@ -408,10 +414,16 @@ If people were provided, fill in the `## Key People` section with entries like:
 - **{{person.name}}** — {{person.role}}. [[{{person-name-slugified}}]]
 ```
 
-If walnuts were provided, fill in the `## Connections` section with entries like:
+And fill in the `## Connections` section with entries like:
 ```
 - [[{{walnut-name-slugified}}]] — {{walnut.goal}}
 ```
+
+If the human provided a credential storage path, fill in the `## Credentials` section:
+```
+env_file: {{env_file_path}}
+```
+If not provided, leave it as the template default (`~/.env`).
 
 Write to `.alive/key.md`.
 
@@ -472,7 +484,6 @@ For each walnut in the list:
 ```
 {{domain}}/{{slug}}/
 {{domain}}/{{slug}}/_core/
-{{domain}}/{{slug}}/_core/_squirrels/
 {{domain}}/{{slug}}/_core/_working/
 {{domain}}/{{slug}}/_core/_references/
 ```
@@ -516,7 +527,6 @@ For each person in the list:
 ```
 02_Life/people/{{slug}}/
 02_Life/people/{{slug}}/_core/
-02_Life/people/{{slug}}/_core/_squirrels/
 02_Life/people/{{slug}}/_core/_working/
 02_Life/people/{{slug}}/_core/_references/
 ```
@@ -591,7 +601,6 @@ Display this summary. Fill in actual values for every placeholder.
 | `[walnut]/_core/log.md` | Prepend-only event spine |
 | `[walnut]/_core/tasks.md` | Work queue |
 | `[walnut]/_core/insights.md` | Evergreen domain knowledge |
-| `[walnut]/_core/_squirrels/` | Walnut-level session entries |
 | `[walnut]/_core/_working/` | Scratch space for in-progress work |
 | `[walnut]/_core/_references/` | Captured external content |
 

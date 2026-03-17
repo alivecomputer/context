@@ -58,15 +58,17 @@ festival-submission/
 
 ### Capsule Versions
 
-Versions are files inside the capsule. No version in folder name.
+Versions are files inside the capsule. No version in folder name. File names include the capsule name for self-documentation.
+
+Pattern: `{capsule-name}-draft-{nn}.md` for working drafts, `{capsule-name}-v1.md` for shipped.
 
 ```
 _core/_capsules/shielding-review/
-  companion.md            <- THE INDEX
-  v0.1.md                 <- first draft
-  v0.2.md                 <- iterated
-  v1.md                   <- graduated
-  raw/                    <- source material
+  companion.md                          <- THE INDEX
+  shielding-review-draft-01.md          <- first draft
+  shielding-review-draft-02.md          <- iterated
+  shielding-review-v1.md                <- graduated
+  raw/                                  <- source material
     2026-02-23-jax-review.mp3
     2026-02-20-vendor-proposal.pdf
 ```

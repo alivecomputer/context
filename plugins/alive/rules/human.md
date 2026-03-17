@@ -52,7 +52,15 @@ The External Guard hook enforces this mechanically. The rule exists so you under
 
 ### No Secrets in Files
 
-API keys, tokens, credentials — environment variables only. Never in walnut files. If you notice a key in a file, flag it immediately.
+API keys, tokens, credentials — never in walnut files. When handling credentials:
+
+1. **Store** the value in the env file at the path specified by `env_file:` in `.alive/key.md` `## Credentials` (defaults to `~/.env`)
+2. **Breadcrumb** — add a row to the `## Credentials` table in `.alive/key.md`: service name, env var name, date. Never the actual value.
+3. **Access** via environment variable (`$ENV_VAR_NAME`)
+
+This applies when: setting up integrations, the human provides a key, onboarding asks for one. The squirrel follows this flow for any known credential moment.
+
+If you notice a key in a walnut file, move it to the env file, replace with the env var reference, and flag it to the human.
 
 ---
 

@@ -1,5 +1,5 @@
 {
-  "description": "ALIVE v1.0.1-beta — 12 hooks. Session hooks read/write .alive/_squirrels/. All read stdin JSON for session_id.",
+  "description": "ALIVE v1.0.1-beta — 13 hooks. Session hooks read/write .alive/_squirrels/. All read stdin JSON for session_id.",
   "hooks": {
     "SessionStart": [
       {
@@ -8,6 +8,11 @@
           {
             "type": "command",
             "command": "bash ${CLAUDE_PLUGIN_ROOT}/hooks/scripts/alive-session-new.sh",
+            "timeout": 10
+          },
+          {
+            "type": "command",
+            "command": "bash ${CLAUDE_PLUGIN_ROOT}/hooks/scripts/alive-repo-detect.sh",
             "timeout": 10
           }
         ]
@@ -28,6 +33,11 @@
           {
             "type": "command",
             "command": "bash ${CLAUDE_PLUGIN_ROOT}/hooks/scripts/alive-session-compact.sh",
+            "timeout": 10
+          },
+          {
+            "type": "command",
+            "command": "bash ${CLAUDE_PLUGIN_ROOT}/hooks/scripts/alive-repo-detect.sh",
             "timeout": 10
           }
         ]

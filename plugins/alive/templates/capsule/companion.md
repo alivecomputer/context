@@ -15,6 +15,13 @@ squirrels: [{{session_id}}]
 #   working_on: "v0.3 — restructuring intro"
 active_sessions: []
 sources: []
+shared: []
+# When populated:
+# shared:
+#   - to: Name
+#     method: email
+#     date: YYYY-MM-DD
+#     version: capsule-name-draft-01.md
 linked_capsules: []
 tags: []
 ---

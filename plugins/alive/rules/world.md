@@ -44,20 +44,19 @@ nova-station/
     log.md                        where it's been
     insights.md                   what's known
     tasks.md                      what needs doing
-    _squirrels/                   session entries
     _capsules/                    units of work (the workshop)
       shielding-review/
-        companion.md              capsule index
-        v0.1.md                   working draft
-        raw/                      source material
+        companion.md                        capsule index
+        shielding-review-draft-01.md        working draft
+        raw/                                source material
       launch-checklist/
         companion.md
-        v0.2.md
-        v1.md                     graduated output
+        launch-checklist-draft-02.md
+        launch-checklist-v1.md              graduated output
         raw/
   shielding-review/               ← graduated capsule (moved out of _core/_capsules/)
     companion.md                  historical record
-    v1.md                         the output
+    shielding-review-v1.md        the output
     raw/                          the sources
   engineering/                    ← live context (the human's work)
   regulatory/
@@ -169,10 +168,6 @@ Markers: `[ ]` not started, `[~]` in progress, `[x]` done. `@session_id` for att
 
 ## Support Folders
 
-### _core/_squirrels/
-
-One YAML per session. Created at start, signed at exit. See squirrels.md.
-
 ### _core/_capsules/
 
 Units of work. Each capsule is a folder with a `companion.md` index, versioned drafts, and a `raw/` folder for source material. See `capsules.md` for lifecycle and management.
@@ -192,7 +187,7 @@ Walnuts still using `_core/_working/` and `_core/_references/` are supported. Mi
 1. Create the walnut folder under the appropriate ALIVE domain.
 2. Create `_core/` inside it.
 3. Write all 5 system files to `_core/`: key.md, now.md, log.md, insights.md, tasks.md.
-4. Create `_core/_squirrels/` and `_core/_capsules/`.
+4. Create `_core/_capsules/`.
 5. Record `parent:` in `_core/key.md` if this is a sub-walnut.
 
 ---
