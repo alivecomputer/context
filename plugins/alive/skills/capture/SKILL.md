@@ -134,9 +134,21 @@ If empty: "Nothing to capture, and your inbox is clear."
 If items exist, enter inbox scan:
 
 1. **List** — scan `03_Inputs/` for non-system files (exclude `.DS_Store`, `.gitkeep`). Present numbered list with detected type and filename.
-2. **Process** — for each selected item: read the file, suggest destination walnut + capsule, rename garbage filenames per conventions, present for confirmation or redirect.
-3. **Capture** — route raw to the chosen capsule's `raw/`, update capsule companion `sources:`, stash insights/tasks, remove original from `03_Inputs/`. If no capsule fits, create one or use `_core/_capsules/_inbox/`.
-4. **Continue or stop** — after each item: "N remaining. Next, or done for now?" Partial clearing is fine.
+2. **Delegate .walnut files** — files ending in `.walnut` or `.walnut.age` are shared walnut packages. Do not process them as regular references. Instead, flag them and suggest `/alive:receive`:
+   ```
+   ╭─ 🐿️ inbox (3 items)
+   │
+   │  1. project-update.walnut        shared walnut package → use /alive:receive
+   │  2. quarterly-report.pdf          document
+   │  3. IMG_4892.jpg                  screenshot
+   │
+   │  Item 1 is a walnut package — run /alive:receive to import it.
+   │  Pick from the rest, or "all" for non-walnut items.
+   ╰─
+   ```
+3. **Process** — for each selected non-walnut item: read the file, suggest destination walnut + capsule, rename garbage filenames per conventions, present for confirmation or redirect.
+4. **Capture** — route raw to the chosen capsule's `raw/`, update capsule companion `sources:`, stash insights/tasks, remove original from `03_Inputs/`. If no capsule fits, create one or use `_core/_capsules/_inbox/`.
+5. **Continue or stop** — after each item: "N remaining. Next, or done for now?" Partial clearing is fine.
 
 ```
 ╭─ 🐿️ inbox (3 items)
