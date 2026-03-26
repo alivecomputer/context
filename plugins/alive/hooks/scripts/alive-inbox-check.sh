@@ -45,12 +45,12 @@ done < <(find "$INPUTS_DIR" -mindepth 1 -maxdepth 1 -print0 2>/dev/null)
 if [ "$WALNUT_COUNT" -gt 0 ]; then
   OTHER_COUNT=$((COUNT - WALNUT_COUNT))
   if [ "$OTHER_COUNT" -gt 0 ]; then
-    NUDGE="Inbox has ${COUNT} item(s) in 03_Inputs/, including ${WALNUT_COUNT} shared walnut package(s). If the human isn't in the middle of something, suggest running alive:receive for the .walnut files and alive:capture for the rest."
+    NUDGE="Inbox has ${COUNT} item(s) in 03_Inputs/, including ${WALNUT_COUNT} shared walnut package(s). If the human isn't in the middle of something, suggest running /alive:receive for the .walnut files and /alive:capture for the rest."
   else
-    NUDGE="Inbox has ${WALNUT_COUNT} shared walnut package(s) in 03_Inputs/. If the human isn't in the middle of something, suggest running alive:receive to import them."
+    NUDGE="Inbox has ${WALNUT_COUNT} shared walnut package(s) in 03_Inputs/. If the human isn't in the middle of something, suggest running /alive:receive to import them."
   fi
 else
-  NUDGE="Inbox has ${COUNT} item(s) in 03_Inputs/. If the human isn't in the middle of something, suggest running alive:capture to clear the inbox."
+  NUDGE="Inbox has ${COUNT} item(s) in 03_Inputs/. If the human isn't in the middle of something, suggest running /alive:capture to clear the inbox."
 fi
 ESCAPED=$(escape_for_json "$NUDGE")
 
