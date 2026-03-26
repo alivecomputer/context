@@ -1,6 +1,6 @@
 ---
 name: walnuts
-description: Load walnut context — structured project memory across sessions. Read priorities, save decisions, manage tasks across your world.
+description: Load ALIVE walnut context — structured project memory across sessions. Read priorities, save decisions, manage tasks across your world.
 version: 1.0.0
 platforms: [macos, linux]
 metadata:
