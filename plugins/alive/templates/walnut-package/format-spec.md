@@ -11,6 +11,8 @@ created: 2026-03-26
 
 The `.walnut` package is the portable unit of walnut context. It lets two people exchange walnut data via any channel they already use -- email, AirDrop, Slack, USB stick. No daemon, no protocol, no infrastructure. Just a file.
 
+This format follows BagIt RFC 8493 principles (self-describing, integrity via checksums) but is not a BagIt bag.
+
 ---
 
 ## 1. Archive Structure
@@ -39,11 +41,10 @@ Always extract to a temporary staging directory first. Never extract directly in
 
 | Extension | Meaning |
 |-----------|---------|
-| `.walnut` | Unencrypted package |
-| `.walnut.age` | Encrypted package (age passphrase mode) |
-| `.walnut.meta` | Cleartext metadata sidecar (auto-generated alongside `.walnut.age`) |
+| `.walnut` | Unencrypted package (tar.gz) |
+| `.walnut.age` | Encrypted package (age-encrypted tar.gz stream) |
 
-The `.walnut.meta` file is never required for import. It exists as a preview aid so the recipient can see source, scope, date, and file count without decrypting. If only a `.walnut.age` file is present (no `.meta`), the receiver decrypts first and reads the manifest from inside.
+These are the two primary package extensions. An optional `.walnut.meta` sidecar may accompany encrypted packages (see Section 7).
 
 ---
 
@@ -85,7 +86,6 @@ Examples:
 | Capsule | `nova-station-capsule-2026-03-26.walnut` |
 | Snapshot | `nova-station-snapshot-2026-03-26.walnut` |
 | Encrypted | `nova-station-capsule-2026-03-26.walnut.age` |
-| Meta sidecar | `nova-station-capsule-2026-03-26.walnut.meta` |
 
 If multiple packages of the same scope are created on the same day, append a sequence number: `nova-station-capsule-2026-03-26-2.walnut`.
 
@@ -97,9 +97,11 @@ Three scopes define what goes into the package. Each is a strict subset of the w
 
 ### 5.1 Full
 
-The entire `_core/` directory minus squirrel entries. Used for handing off a walnut to someone who will continue the work.
+Everything under `_core/` except excluded items. Used for handing off a walnut to someone who will continue the work.
 
-**Directory layout inside archive:**
+**Rule:** Include all files and directories under `_core/` that are not explicitly excluded below.
+
+**Directory layout inside archive (schematic):**
 
 ```
 manifest.yaml
@@ -109,18 +111,19 @@ _core/
   log.md
   insights.md
   tasks.md
-  _working/
-    <all working files>
-  _references/
-    <all companions and raw files>
-  _capsules/
+  _capsules/                  (if present)
     <all capsule directories>
+  _working/                   (if present)
+    <all working files>
+  _references/                (if present)
+    <all companions and raw files>
 ```
 
 **Excluded from full scope:**
 - `_core/_squirrels/` -- ephemeral, machine-specific session entries. No value to recipient.
 - `_core/_index.yaml` -- derived ambient context file, regenerated locally.
-- Files matching `.DS_Store`, `Thumbs.db`, `desktop.ini`.
+- OS artifacts: `.DS_Store`, `Thumbs.db`, `desktop.ini`.
+- AppleDouble/resource fork files: `._*` (prevented via `COPYFILE_DISABLE=1`).
 
 **Import behaviour:** Always creates a new walnut. The receiver is asked which ALIVE domain to place it in (`02_Life/`, `04_Ventures/`, `05_Experiments/`).
 
@@ -146,11 +149,13 @@ _core/
 
 Multiple capsules are allowed in one package. The manifest's `files:` array lists every file across all included capsules.
 
+**Immutability:** Capsule version files (e.g. `v0.1.md`, `v0.2.md`) are immutable after creation and MUST be exported byte-for-byte. Export-time stripping applies only to capsule companion frontmatter, never to version files.
+
 **What gets stripped on export:**
-- `active_sessions:` in capsule companions -- ephemeral session data, meaningless to recipient.
+- `active_sessions:` key in capsule companions -- remove the key entirely (not just emptied). Ephemeral session data is meaningless to the recipient.
 
 **What gets preserved:**
-- `sensitivity:` and `pii:` fields -- the receiver needs to see these.
+- `sensitivity:` and `pii:` fields -- MUST be preserved. The receiver MUST surface these prominently on import and SHOULD require explicit user confirmation before importing content marked `sensitivity: restricted` or `pii: true`.
 - `shared:` history -- provenance of who else has seen this capsule.
 - `sources:` and `linked_capsules:` -- preserved as-is even if they reference inaccessible content. They're historical metadata.
 
@@ -188,7 +193,7 @@ Every package contains a `manifest.yaml` at the archive root. See the companion 
 | `source` | object | Provenance: walnut name, session_id, engine, plugin_version. |
 | `scope` | enum | `full`, `capsule`, or `snapshot`. |
 | `created` | string (ISO 8601) | When the package was created. |
-| `encrypted` | boolean | Whether the archive contents are encrypted. Always `false` inside an unencrypted archive. Set to `true` in `.walnut.meta` sidecar. |
+| `encrypted` | boolean | `true` if the package was shared as `.walnut.age` (age-encrypted). Inside the archive manifest this is always `false` (you can only read it after decrypting). Set to `true` in the `.walnut.meta` sidecar if one was generated. |
 | `description` | string | One-line human-readable description. Auto-generated from `key.md` goal (or capsule goal for capsule scope). |
 | `files` | array | Every file in the archive with `path`, `sha256`, and `size`. |
 
@@ -236,14 +241,14 @@ Content that is stripped or transformed on export:
 |---------|--------|--------|
 | `_core/_squirrels/` | Excluded entirely | Ephemeral, machine-specific session data |
 | `_core/_index.yaml` | Excluded | Derived ambient context, regenerated locally |
-| `active_sessions:` in capsule companions | Set to `[]` | Ephemeral session data, meaningless to recipient |
+| `active_sessions:` in capsule companions | Remove key entirely | Ephemeral session data, meaningless to recipient |
 | `.DS_Store`, `Thumbs.db`, `desktop.ini` | Excluded | OS artifacts |
 
 Content that is **preserved** (even if it seems ephemeral):
 
 | Content | Reason |
 |---------|--------|
-| `sensitivity: restricted` / `pii: true` | Receiver must see these warnings |
+| `sensitivity: restricted` / `pii: true` | Receiver MUST surface these and SHOULD require explicit confirmation |
 | `shared:` history | Provenance chain |
 | `sources:` with cross-references | Historical metadata, even if inaccessible |
 | `@session_id` in tasks | Transformed on *import* (not export) to `@[source-walnut]` |
@@ -289,17 +294,6 @@ nova-station-full-2026-03-26.walnut (tar.gz)
     log.md
     insights.md
     tasks.md
-    _working/
-      launch-checklist-v0.2.md
-    _references/
-      transcripts/
-        2026-02-23-kai-shielding-review.md
-        raw/
-          2026-02-23-kai-shielding-review.mp3
-      screenshots/
-        2026-03-01-competitor-pricing.md
-        raw/
-          2026-03-01-competitor-pricing.png
     _capsules/
       shielding-review/
         companion.md
@@ -307,6 +301,13 @@ nova-station-full-2026-03-26.walnut (tar.gz)
         shielding-review-draft-02.md
         raw/
           vendor-specs.pdf
+    _working/                               (if present)
+      launch-checklist-v0.2.md
+    _references/                            (if present)
+      transcripts/
+        2026-02-23-kai-shielding-review.md
+        raw/
+          2026-02-23-kai-shielding-review.mp3
 ```
 
 ### Capsule scope

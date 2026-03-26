@@ -55,15 +55,18 @@ created: "{{created_iso8601}}"
 # ──────────────────────────────────────────────────────────────────────
 # Encryption flag [required, boolean]
 #
-# Inside an unencrypted .walnut archive, this is always false.
-# In a .walnut.meta sidecar, this is true.
+# true  => the shared package file was encrypted (.walnut.age)
+# false => the shared package file was unencrypted (.walnut)
+#
+# Inside the archive itself this is always false (you can only read it
+# after decrypting). Set to true in the .walnut.meta sidecar.
 # ──────────────────────────────────────────────────────────────────────
 encrypted: false
 
 # ──────────────────────────────────────────────────────────────────────
 # Description [required, string]
 #
-# One-line human-readable summary.
+# One-line human-readable summary (no newlines).
 # Auto-generated from key.md goal (full/snapshot) or capsule goal (capsule).
 # ──────────────────────────────────────────────────────────────────────
 description: "{{description}}"
@@ -94,14 +97,16 @@ description: "{{description}}"
 #   path   - relative path from archive root [required, string]
 #   sha256 - SHA-256 hex digest of file contents [required, string (64 chars)]
 #   size   - file size in bytes [required, integer]
+#
+# RECOMMENDED: sort entries lexicographically by path for stable diffs.
 # ──────────────────────────────────────────────────────────────────────
 files:
   - path: "_core/key.md"
     sha256: "{{sha256_hex}}"
-    size: 1920
+    size: {{size_bytes}}
 
   - path: "_core/now.md"
     sha256: "{{sha256_hex}}"
-    size: 1256
+    size: {{size_bytes}}
 
   # ... one entry per file in the archive
