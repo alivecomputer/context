@@ -7,7 +7,7 @@ assignees: ''
 ---
 
 **Component:** <!-- skill | rule | hook | template | runtime | other -->
-**Affects:** <!-- e.g. alive:save, session lifecycle, capsule routing -->
+**Affects:** <!-- e.g. walnut:save, session lifecycle, capsule routing -->
 
 ## Problem
 

@@ -21,7 +21,7 @@
 
 ## Session context
 
-<!-- Optional: paste your squirrel YAML entry if this was built inside an ALIVE session. -->
+<!-- Optional: paste your squirrel YAML entry if this was built inside a walnut session. -->
 
 ```yaml
 ```
