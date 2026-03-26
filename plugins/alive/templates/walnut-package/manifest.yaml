@@ -1,0 +1,107 @@
+# .walnut Package Manifest
+#
+# Every .walnut archive contains this file at the root.
+# All fields marked [required] must be present. Fields marked [optional]
+# may be omitted. The alive:receive skill validates this manifest before
+# importing any content.
+#
+# Schema version: 1.0.0
+# Inspired by BagIt RFC 8493 (integrity via checksums, self-describing).
+
+# ──────────────────────────────────────────────────────────────────────
+# Format version (semver) [required]
+#
+# Major bump = breaking change to manifest schema or archive structure.
+# Minor bump = backwards-compatible additions.
+# Patch bump = documentation only.
+#
+# Receiver blocks on major version mismatch.
+# ──────────────────────────────────────────────────────────────────────
+format_version: "1.0.0"
+
+# ──────────────────────────────────────────────────────────────────────
+# Source provenance [required]
+#
+# Full transparency. The recipient sees where this came from.
+# ──────────────────────────────────────────────────────────────────────
+source:
+  # Name of the source walnut [required, string]
+  walnut: "{{walnut_name}}"
+
+  # Session that created this package [required, string]
+  session_id: "{{session_id}}"
+
+  # AI engine that ran during packaging [required, string]
+  engine: "{{engine}}"
+
+  # ALIVE plugin version installed when package was created [required, string (semver)]
+  # Receiver checks major version compatibility.
+  plugin_version: "{{plugin_version}}"
+
+# ──────────────────────────────────────────────────────────────────────
+# Scope [required, enum: "full" | "capsule" | "snapshot"]
+#
+# full     - entire _core/ minus _squirrels/. Creates new walnut on import.
+# capsule  - one or more capsules + parent key.md. Into existing walnut.
+# snapshot - key.md + now.md + insights.md. Read-only status briefing.
+# ──────────────────────────────────────────────────────────────────────
+scope: "{{scope}}"
+
+# ──────────────────────────────────────────────────────────────────────
+# Timestamp [required, string (ISO 8601 with timezone)]
+# ──────────────────────────────────────────────────────────────────────
+created: "{{created_iso8601}}"
+
+# ──────────────────────────────────────────────────────────────────────
+# Encryption flag [required, boolean]
+#
+# Inside an unencrypted .walnut archive, this is always false.
+# In a .walnut.meta sidecar, this is true.
+# ──────────────────────────────────────────────────────────────────────
+encrypted: false
+
+# ──────────────────────────────────────────────────────────────────────
+# Description [required, string]
+#
+# One-line human-readable summary.
+# Auto-generated from key.md goal (full/snapshot) or capsule goal (capsule).
+# ──────────────────────────────────────────────────────────────────────
+description: "{{description}}"
+
+# ──────────────────────────────────────────────────────────────────────
+# Personal note [optional, string]
+#
+# Free-form message from the sender. Shown in a bordered block on import.
+# ──────────────────────────────────────────────────────────────────────
+# note: "Hey, check out the shielding review -- draft 02 has the updated numbers."
+
+# ──────────────────────────────────────────────────────────────────────
+# Capsule names [optional, array of strings]
+#
+# Only present for capsule scope. Lists the capsule directories included.
+# ──────────────────────────────────────────────────────────────────────
+# capsules:
+#   - "shielding-review"
+#   - "safety-brief"
+
+# ──────────────────────────────────────────────────────────────────────
+# File inventory [required, array of objects]
+#
+# Every file in the archive except manifest.yaml itself.
+# The receiver validates each sha256 checksum before importing.
+#
+# Fields per entry:
+#   path   - relative path from archive root [required, string]
+#   sha256 - SHA-256 hex digest of file contents [required, string (64 chars)]
+#   size   - file size in bytes [required, integer]
+# ──────────────────────────────────────────────────────────────────────
+files:
+  - path: "_core/key.md"
+    sha256: "{{sha256_hex}}"
+    size: 1920
+
+  - path: "_core/now.md"
+    sha256: "{{sha256_hex}}"
+    size: 1256
+
+  # ... one entry per file in the archive
