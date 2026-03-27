@@ -16,10 +16,10 @@ jobs:
 
       - name: Validate plugin structure
         run: |
-          PLUGIN_DIR="plugins/alive"
+          PLUGIN_DIR="plugins/walnut"
           ERRORS=0
 
-          echo "=== Validating ALIVE plugin structure ==="
+          echo "=== Validating Walnut plugin structure ==="
 
           # Check required top-level files
           for file in CLAUDE.md; do
@@ -88,7 +88,7 @@ jobs:
           # Check templates exist
           echo ""
           echo "=== Templates ==="
-          for template_dir in alive walnut capsule squirrel; do
+          for template_dir in world walnut capsule squirrel; do
             if [ ! -d "$PLUGIN_DIR/templates/$template_dir" ]; then
               echo "⚠️  Template directory '$template_dir' not found (optional)"
             else
