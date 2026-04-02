@@ -29,8 +29,9 @@ The script walks all directories for `key.md` files, handling both `_kernel/key.
 - People (from `key.md` `people:` field — multi-line list)
 - Links (from `key.md` `links:` field — wikilink extraction)
 - Parent (from `key.md` `parent:` field)
-- Bundles (from `bundles/*/context.manifest.yaml` frontmatter — name, status, goal)
-- Last updated (from `now.json` `updated` field)
+- Bundles (detected by `*/context.manifest.yaml` in walnut root — name, status, goal)
+- Task counts (from `_kernel/now.json` if present)
+- Last updated (from `_kernel/now.json` `updated` field)
 
 **Projection tiers:**
 The graph supports three projection levels for controlling visual density:

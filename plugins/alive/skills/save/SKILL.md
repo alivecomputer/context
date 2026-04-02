@@ -18,16 +18,17 @@ Save is NOT a termination. The session continues. Save can happen multiple times
 
 Read these in parallel before presenting the stash or writing anything:
 
-- `_kernel/_generated/now.json` — what was the previous `next:`? What bundle is active? What was the context?
+- `_kernel/now.json` — what was the previous `next:`? What bundle is active? What was the context?
 - `_kernel/log.md` — first ~100 lines (recent entries — what have previous sessions covered?)
-- `bundles/*/tasks.md` — current task queues per bundle
-- Active bundle's `context.manifest.yaml` — if `now.json` has a `bundle:` value, read that bundle's manifest
+- Active bundle's `context.manifest.yaml` — if `now.json` has a `next.bundle` value, read that bundle's manifest
 
-**Backward compat:** Check `_kernel/` first for system files, fall back to walnut root.
+**Do NOT read `bundles/*/tasks.md`** — task data lives in `now.json` already, or call `tasks.py list --walnut {path}` if you need specific detail.
+
+**Backward compat:** If `_kernel/now.json` does not exist, check `_kernel/_generated/now.json` as a fallback.
 
 **Standalone session (no walnut loaded):** If no walnut was opened this session, the squirrel still has a stash to route. Ask: "Which walnut does this session belong to?" If the human names one, load its core files and proceed normally. If truly walnut-less (system maintenance, cross-walnut work, one-off task), write the log entry to `.alive/log.md` instead of a walnut log. Same format, same signing. The squirrel YAML at `.alive/_squirrels/` keeps `walnut: null`.
 
-This gives the squirrel the full picture BEFORE it starts routing. It knows what was expected this session, which bundle was active, what previous sessions accomplished, and what the task state is. This makes everything that follows smarter — better routing suggestions, better now.json synthesis, better log entries that don't duplicate what's already recorded.
+This gives the squirrel the full picture BEFORE it starts routing. It knows what was expected this session, which bundle was active, what previous sessions accomplished, and what the task state is. This makes everything that follows smarter — better routing suggestions, better log entries that don't duplicate what's already recorded.
 
 ### 2. Pre-Save Scan
 
@@ -82,7 +83,7 @@ You can select an option OR use "Other" to provide free text — editing items, 
 ```
 → AskUserQuestion: "Commit as evergreen" / "Just log it"
 
-If previous next: was NOT completed and is being replaced, it moves to the relevant bundle's `tasks.md` with context.
+If previous next: was NOT completed and is being replaced, it gets routed as a task via `tasks.py add` to the relevant bundle with context.
 
 ### 4. Write Log Entry
 
@@ -94,31 +95,34 @@ If previous next: was NOT completed and is being replaced, it moves to the relev
 - References captured
 - Next actions identified
 
-**The log entry must be written BEFORE updating now.json. The log is truth. Everything else derives from it.**
+**The log entry must be written BEFORE any other files. The log is truth. Everything else derives from it.**
 
 ### 5. Prepare Remaining Content (in memory)
 
-**Re-read `_kernel/log.md` first ~150 lines** to ground the now.json synthesis in the actual written log. This captures the entry just prepended in step 4 plus the previous 3-4 entries — enough for a proper 3-5 entry synthesis. Don't rely on memory of what was read in step 1; the log has changed since then.
+**Re-read `_kernel/log.md` first ~150 lines** to ground the remaining work in the actual written log. This captures the entry just prepended in step 4 plus the previous 3-4 entries. Don't rely on memory of what was read in step 1; the log has changed since then.
 
 Then prepare the content for all remaining files in memory:
 
-- **_kernel/_generated/now.json** — full replacement: phase, bundle, next, updated, squirrel, context paragraph, projections. Set `bundle:` to the active bundle name (or null if none). The context paragraph synthesises the last 3-5 log entries (including the one just written) — what's been happening across sessions, not just this session. A new squirrel reading now.json should understand the full current situation without touching the log. Generate projections based on trajectory.
-- **bundles/*/tasks.md** — new tasks routed to the appropriate bundle's task file, completed marked, in-progress updated
+- **Active bundle's `context.manifest.yaml`** — update the `context:` field to reflect current state. Merge new information with existing context; don't flatten rich context from a previous deep session.
+- **`_kernel/insights.md`** — new evergreen entries (only if confirmed in step 3)
 - **Cross-walnut dispatches** — brief log entries for destination walnuts
-- **_kernel/insights.md** — new evergreen entries (only if confirmed in step 3)
+- **Tasks via `tasks.py`** — plan the calls:
+  - New task: `python3 plugins/alive/scripts/tasks.py add --walnut {path} --title "..." --bundle {name} --priority urgent`
+  - Mark done: `python3 plugins/alive/scripts/tasks.py done --walnut {path} --id t001`
+  - Edit: `python3 plugins/alive/scripts/tasks.py edit --walnut {path} --id t001 --priority active`
 
-**Protect existing now.json context.** If this session was minor but the existing now.json has rich context from a previous deep session — do NOT flatten it. Merge new information in. The test: is the new now.json MORE informative than the old one? If not, keep what was there and layer the new stuff on top.
+**The agent does NOT write `now.json`.** The post-write hook runs `project.py` automatically after `log.md` is written, which assembles `now.json` from all source files. Do not prepare now.json content.
 
 ### 6. Write Remaining Files (parallel)
 
-Fire all remaining writes as parallel Edit calls in a single message. The content was prepared in step 5. These are independent of each other — they only depend on the log entry existing, which step 4 handled.
+Fire all remaining writes as parallel calls in a single message. The content was prepared in step 5. These are independent of each other — they only depend on the log entry existing, which step 4 handled.
 
 Parallel writes:
-- `_kernel/_generated/now.json` — full replacement with prepared content
-- `bundles/*/tasks.md` — updates routed to appropriate bundle task files
+- Active bundle's `context.manifest.yaml` — context field update
 - `_kernel/insights.md` — new evergreen entries (if any confirmed)
 - Cross-walnut dispatches — brief log entries to destination walnut logs (if any)
 - Cross-walnut task additions — tasks routed to other walnuts (if any)
+- Tasks via `tasks.py` Bash calls — can run in parallel with the file writes above
 
 ### 6b. Update Squirrel Entry
 
@@ -158,17 +162,19 @@ If any stash items require scaffolding new walnuts (new person, new venture/expe
 
 Not a vibe check. A concrete checklist. Run through each:
 
-- [ ] **now.json** — does the context paragraph reflect the full current picture (not just this session)?
+- [ ] **now.json** — project.py will compute this from the log entry and source files. Verify the log entry has enough context for a good projection.
 - [ ] **Log entry** — does it capture WHY decisions were made, not just WHAT?
-- [ ] **bundles/*/tasks.md** — are new tasks routed to the right bundle, completed tasks marked, nothing stale left as active?
+- [ ] **Tasks** — were tasks routed via `tasks.py`? Check by calling `tasks.py list --walnut {path}` if uncertain.
 - [ ] **Bundles** — was any bundle worked on this session? Is its manifest updated (sources, decisions, status)?
 - [ ] **References** — was any external content discussed this session that wasn't captured? Any research worth saving? (Route to bundle `raw/` if active bundle exists.)
 - [ ] **Insights** — did any standing domain knowledge surface that should be proposed as evergreen?
 - [ ] **People** — was anyone mentioned who should have context dispatched to their walnut?
-- [ ] **Bundle status** — should any bundle advance? (draft → prototype when it has a visual; prototype → published when shared externally; published → done when outputs graduated)
+- [ ] **Bundle status** — should any bundle advance? (draft → prototype when it has a visual; prototype → published when shared externally; published → done when outputs graduated). Graduation is a status flip in the manifest.
 - [ ] **Bundle shared** — was a bundle shared with someone this session? If so, update the manifest's `shared:` frontmatter (to, method, date, version) and stash a dispatch to the person's walnut.
 
 If anything fails, fix it before completing the save. This is the last gate.
+
+**Post-save note:** After `log.md` is written, the post-write hook automatically runs `project.py` → `now.json`, then `generate-index.py` → `_index.json`. The agent does not need to trigger these.
 
 ### 9. Continue
 
@@ -177,7 +183,7 @@ Session continues. Stash resets for next checkpoint.
 ```
 ╭─ 🐿️ saved — checkpoint 2
 │  3 decisions routed to log
-│  2 tasks added to bundles
+│  2 tasks added via tasks.py
 │  1 dispatch to [[jax-stellara]]
 │  next: updated
 │  zero-context: ✓
@@ -198,7 +204,6 @@ When the session truly ends (stop hook, explicit "I'm done done", the human leav
   - Set `ended:` to current timestamp
   - `saves:` is already > 0 from the last save
   - Set `transcript_path:` — scan `~/.claude/projects/*/` for a JSONL file containing the session ID
-- Final now.json update
 - The entry is already saved — this step adds the exit metadata
 
 ---

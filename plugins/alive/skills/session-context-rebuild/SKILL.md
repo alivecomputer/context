@@ -52,7 +52,7 @@ Based on scope, dispatch parallel subagents — one per session or one per domai
 **Agent assignments:**
 - **Log agent** — reads `_kernel/log.md`, extracts all entries from sessions in scope. Returns decisions, rationale, timestamps.
 - **File agents** (1 per bundle/area touched) — reads the actual files listed in `working:` fields. Returns current state, what changed, any draft versions.
-- **Task agent** — reads `bundles/*/tasks.md`. Returns what's done, what's in progress, what's blocked.
+- **Task agent** — uses `tasks.py list` to query task state. Returns what's done, what's in progress, what's blocked.
 - **People agent** — extracts all person mentions from log entries and stash items. Cross-references with people walnuts if they exist.
 - **Conflict agent** (if overlapping sessions detected) — reads both sessions' log entries and file changes side by side. Identifies contradictions: different decisions on the same topic, competing task states, divergent draft versions.
 
@@ -76,7 +76,7 @@ Combine all agent findings into a single reconstructed context:
 │
 │  Current state:
 │  Bundle: competitor-research (draft-03)
-│  Key file: bundles/competitor-research/competitor-research-draft-03.md
+│  Key file: competitor-research/competitor-research-draft-03.md
 │
 │  Open tasks (4):
 │  - [ ] Vendor site visits
@@ -112,7 +112,7 @@ Two sessions conflict when:
 - Both wrote to the same file (different versions)
 - Both logged decisions on the same topic (contradicting)
 - Both updated the same task (different states)
-- Both modified `_kernel/now.json` with different `next` actions
+- Both modified `_kernel/now.json` with different `next` actions (path: `_kernel/now.json`)
 
 The conflict agent presents each side with evidence and recommends a merge. The human decides.
 

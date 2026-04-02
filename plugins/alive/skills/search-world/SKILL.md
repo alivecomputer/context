@@ -24,13 +24,13 @@ Scan `_kernel/insights.md` across relevant walnuts. Domain knowledge that persis
 Search `_kernel/log.md` entries. Signed decisions, session summaries, what happened when. Frontmatter first (last-entry, summary), then entry bodies.
 
 ### 4. Task Search (work queue)
-Scan `bundles/*/tasks.md` across walnuts. Find tasks by status, age, attribution.
+Use `tasks.py list` to query tasks across walnuts. Find tasks by status, age, attribution.
 
 ### 5. Working File Search (drafts)
-Scan `bundles/*/` across walnuts. Find drafts by name, version, age, squirrel attribution.
+Scan `*/` across walnuts (bundles are flat in walnut root). Find drafts by name, version, age, squirrel attribution.
 
 ### 6. Bundle Manifest Search (captured content metadata)
-Search `bundles/*/context.manifest.yaml` files. Match on frontmatter: type, date, source, participants, subject.
+Search `*/context.manifest.yaml` files across walnuts (bundles are flat in walnut root). Match on frontmatter: type, date, source, participants, subject.
 
 ### 7. Raw Reference Search (last resort, expensive)
 Load actual raw files. Only on explicit request — "read me that email from Jax."
@@ -72,6 +72,6 @@ When a match is found, surface connected walnuts:
 
 "What happened last week" → filter log entries by date range, show across all active walnuts.
 
-"What changed since Tuesday" → scan `_kernel/_generated/now.json` updated timestamps + recent log entries.
+"What changed since Tuesday" → scan `_kernel/now.json` updated timestamps + recent log entries.
 
 "History of nova-station" → show `_kernel/log.md` frontmatter (entry count, summary) + offer to load recent entries.

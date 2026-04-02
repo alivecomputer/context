@@ -15,7 +15,7 @@ NOT a database dump. NOT a flat list. A living view of their world, grouped by w
 ## Load Sequence
 
 1. **Read the injected `<WORLD_INDEX>`** — it's already in your session context from the SessionStart hook. Contains every walnut's type, goal, phase, rhythm, updated, next, people, links, tags, bundles, and parent relationships. Zero file reads needed. If `<WORLD_INDEX>` is not in context, fall back to reading `.alive/_index.yaml` directly.
-2. **If no index exists at all** — generate it first (`python3 .alive/scripts/generate-index.py "$WORLD_ROOT"`), then read the output. If the script doesn't exist either, fall back to manual scanning: use Glob to find all `*/_kernel/key.md` files across the World, read each one's frontmatter (type, goal, rhythm, people, links, parent), then read matching `_kernel/_generated/now.json` frontmatter (phase, updated, next, bundle). Dispatch these reads as parallel subagents to keep it fast. This fallback only happens on first-time setup before the index infrastructure exists.
+2. **If no index exists at all** — generate it first (`python3 .alive/scripts/generate-index.py "$WORLD_ROOT"`), then read the output. If the script doesn't exist either, fall back to manual scanning: use Glob to find all `*/_kernel/key.md` files across the World, read each one's frontmatter (type, goal, rhythm, people, links, parent), then read matching `_kernel/now.json` frontmatter (phase, updated, next, bundle). Dispatch these reads as parallel subagents to keep it fast. This fallback only happens on first-time setup before the index infrastructure exists.
 3. Build the tree from the index — parent/child relationships from `parent:` field
 4. **Lightweight fresh checks** — one Bash call each, no subagents, no Explore agents:
    - **Unsigned squirrels with stash:** `cd .alive/_squirrels && for f in *.yaml; do grep -q "saves: 0" "$f" && ! grep -q "stash: \[\]" "$f" && echo "$f"; done 2>/dev/null` — if any files are returned, read those specific YAMLs to surface the stash items. If nothing returned, skip.
@@ -65,7 +65,7 @@ What needs the human's attention TODAY. Not everything — just what's active an
 
 Only show walnuts that are `active` or past their rhythm. Sort by most recently touched. Show:
 - Phase
-- Next action (from `_kernel/_generated/now.json`)
+- Next action (from `_kernel/now.json`)
 - Last activity (relative time)
 - People involved (from `_kernel/key.md` — max 2-3 names)
 - Warning if past rhythm
@@ -117,7 +117,7 @@ The full structure — grouped by ALIVE domain, with parent/child nesting visibl
 │   nebula-drift       quiet      Podcast landing
 │
 │  EXPERIMENTS
-│   nova-station          building   Orbital test suite              3 bundles (2 draft, 1 done)
+│   nova-station          building   Orbital test suite              3 bundles (2 draft, 1 done) · 4 tasks
 │   ghost-protocol     waiting    Decide: rewrite or revise
 │   flux-engine        quiet      ⚠ 12 days
 │   pulsar-sync        quiet      Simplify countdown
@@ -182,7 +182,7 @@ What's been happening across the world. A pulse check.
 
 ## Index Freshness
 
-The index regenerates automatically after every save (post-write hook detects `_kernel/_generated/now.json` writes). If the index is missing or the human asks for a fresh view, regenerate on demand:
+The index regenerates automatically after every save (post-write hook detects `_kernel/now.json` writes). If the index is missing or the human asks for a fresh view, regenerate on demand:
 
 ```bash
 python3 .alive/scripts/generate-index.py "$WORLD_ROOT"

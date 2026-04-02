@@ -44,10 +44,10 @@ No processing. Just identification.
 
 Even if extraction fails or is skipped, the raw content is preserved.
 
-**Routing decision:** Check `_kernel/_generated/now.json` for an active `bundle:` field.
+**Routing decision:** Check `_kernel/now.json` for an active `bundle:` field.
 
 **If active bundle exists:**
-1. Write raw file → `bundles/{bundle}/raw/[name].[ext]`
+1. Write raw file → `{bundle}/raw/[name].[ext]`
 2. Update bundle `context.manifest.yaml` → add entry to `sources:` list in frontmatter
 3. Optionally add summary to manifest body under `## Current State`
 
@@ -56,14 +56,14 @@ Even if extraction fails or is skipped, the raw content is preserved.
 ╭─ 🐿️ captured content — where does it go?
 │
 │   1. Create new bundle for this
-│   2. Add to existing bundle: [list bundle names from bundles/]
+│   2. Add to existing bundle: [list bundle names from walnut root]
 │   3. Capture standalone (legacy _references/ style)
 ╰─
 ```
 
-If creating a new bundle: scaffold `bundles/{name}/context.manifest.yaml` from `templates/bundle/context.manifest.yaml`, then route raw into its `raw/`.
+If creating a new bundle: scaffold `{name}/context.manifest.yaml` from `templates/bundle/context.manifest.yaml`, then route raw into its `raw/`.
 
-If standalone (backward compat or no bundle fits): write to `bundles/_inbox/raw/[name].[ext]` with a minimal manifest entry. The `_inbox` bundle is a holding pen — route out at next save.
+If standalone (backward compat or no bundle fits): write to `_inbox/raw/[name].[ext]` with a minimal manifest entry. The `_inbox` bundle is a holding pen — route out at next save.
 
 **Manifest enrichment.** Whether updating a bundle manifest or creating a standalone manifest, always write:
 
@@ -85,7 +85,7 @@ The summary should be **detailed enough that you rarely need the raw file.** Wri
 **File naming:** `YYYY-MM-DD-descriptive-name.ext`
 **Garbage filenames** (CleanShot timestamps, IMG_xxxx) get renamed on import.
 
-**Backward compat:** If the walnut still uses `_kernel/_references/`, route there instead. The bundle routing is for walnuts that have `bundles/`.
+**Backward compat:** If the walnut still uses `_kernel/_references/`, route there instead. The bundle routing is for walnuts that have bundles (detected by `context.manifest.yaml` files).
 
 ### Stage 2 — Extract, Stash, Route (bounded, optional)
 
@@ -136,7 +136,7 @@ If items exist, enter inbox scan:
 
 1. **List** — scan `03_Inputs/` for non-system files (exclude `.DS_Store`, `.gitkeep`). Present numbered list with detected type and filename.
 2. **Process** — for each selected item: read the file, suggest destination walnut + bundle, rename garbage filenames per conventions, present for confirmation or redirect.
-3. **Capture** — route raw to the chosen bundle's `raw/`, update bundle `context.manifest.yaml` `sources:`, stash insights/tasks, remove original from `03_Inputs/`. If no bundle fits, create one or use `bundles/_inbox/`.
+3. **Capture** — route raw to the chosen bundle's `raw/`, update bundle `context.manifest.yaml` `sources:`, stash insights/tasks, remove original from `03_Inputs/`. If no bundle fits, create one or use `_inbox/`.
 4. **Continue or stop** — after each item: "N remaining. Next, or done for now?" Partial clearing is fine.
 
 ```
@@ -230,7 +230,7 @@ The squirrel should proactively offer to capture when:
 
 A full reference — the same as any other captured content. Not a summary note. A proper manifest file with frontmatter and structured body.
 
-**1. Route to active bundle** (or create a research bundle). Raw goes to `bundles/{bundle}/raw/YYYY-MM-DD-topic.md`, manifest updated with source entry and structured summary:
+**1. Route to active bundle** (or create a research bundle). Raw goes to `{bundle}/raw/YYYY-MM-DD-topic.md`, manifest updated with source entry and structured summary:
 
 ```yaml
 ---
@@ -316,8 +316,8 @@ The test: **would the next squirrel waste time rediscovering this?** If yes, cap
 
 | Scenario | Raw goes to | Manifest update |
 |----------|-------------|-----------------|
-| Active bundle in now.json | `bundles/{bundle}/raw/` | Add to manifest `sources:` + summary |
-| No active bundle, the human picks existing | `bundles/{bundle}/raw/` | Add to manifest `sources:` + summary |
+| Active bundle in now.json | `{bundle}/raw/` | Add to manifest `sources:` + summary |
+| No active bundle, the human picks existing | `{bundle}/raw/` | Add to manifest `sources:` + summary |
 | No active bundle, the human creates new | Scaffold bundle, then `raw/` | New manifest with source |
-| Standalone / no bundles folder | `bundles/_inbox/raw/` | Minimal manifest, route at save |
+| Standalone / no bundles folder | `_inbox/raw/` | Minimal manifest, route at save |
 | Legacy walnut (has `_kernel/`) | `_kernel/_references/[type]/raw/` | Legacy manifest file |

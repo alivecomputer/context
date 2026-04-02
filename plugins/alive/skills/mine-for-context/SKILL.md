@@ -31,8 +31,8 @@ Scan what's available. Don't read everything — just understand the landscape.
 ```
 ╭─ squirrel scanning sources
 │
-│  bundles/client-calls/raw/ — 12 transcripts (3 unprocessed)
-│  bundles/research/raw/ — 8 documents (5 unprocessed)
+│  client-calls/raw/ — 12 transcripts (3 unprocessed)
+│  research/raw/ — 8 documents (5 unprocessed)
 │  .alive/_squirrels/ — 23 sessions (8 with rich stash, 4 unmined transcripts)
 │
 │  Total: 43 sources, 12 unprocessed, 4 unmined sessions
@@ -45,7 +45,7 @@ Before touching any content, propose a plan. What to look for, in what order, ex
 
 ```
 ╭─ squirrel extraction plan
-│  Source: bundles/client-calls/raw/ (12 transcripts)
+│  Source: client-calls/raw/ (12 transcripts)
 │
 │  Targets:
 │  - People mentioned (create/update person walnuts)

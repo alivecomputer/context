@@ -245,12 +245,12 @@ Generate a context briefing that a new squirrel can load to continue the work. T
 - Key relationships and people context
 - The specific reason for the handoff
 
-Written to `bundles/_inbox/raw/recall-[date]-[topic].md` and optionally loaded directly into a new session.
+Written to `_inbox/raw/recall-[date]-[topic].md` and optionally loaded directly into a new session.
 
 ```
 ╭─ squirrel handoff ready
 │
-│  bundles/_inbox/raw/recall-2026-02-24-investor-deck.md
+│  _inbox/raw/recall-2026-02-24-investor-deck.md
 │
 │  Context from 3 sessions, focused on: investor deck preparation
 │  12 decisions, 4 open questions, 3 bundles referenced
