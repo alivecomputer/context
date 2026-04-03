@@ -236,11 +236,11 @@ No change = no stash shown. "drop", "nah", "remove that" = gone. Keep talking = 
 
 ### Stash Checkpoint (Crash Insurance)
 
-Every 5 items or 20 minutes, shadow-write the current stash to the squirrel YAML entry. Brief, no ceremony. This is the safety net for terminal crashes — the next session can recover from the YAML.
+The stash lives in conversation until save. Save IS the checkpoint — it routes the stash, updates the YAML, and resets. The session continues after. There is no automatic mid-session write — no timers, no item counters. If the session crashes before a save, the transcript JSONL is the recovery source (via `alive:session-context-rebuild`).
 
 ### If Stashing Stops
 
-If 30+ minutes pass without stashing anything, scan back. Decisions were probably made. Things were probably said. Catch up.
+If a significant stretch of conversation passes without stashing anything, scan back. Decisions were probably made. Things were probably said. Catch up.
 
 ---
 
