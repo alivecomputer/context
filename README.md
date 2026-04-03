@@ -19,10 +19,6 @@
   <strong>The agent is replaceable. The runtime is portable. The walnut is permanent.</strong>
 </p>
 
-<p align="center">
-  <sub>Agents are instances — ephemeral. Models are utilities — temporary.<br>Context is property — permanent.</sub>
-</p>
-
 ---
 
 ```bash
@@ -30,6 +26,9 @@ claude plugin install alive@alivecontext
 ```
 
 ---
+
+<!-- TODO: Add hero GIF here once rendered -->
+<!-- <p align="center"><img src="assets/hero-demo.gif" alt="ALIVE session demo" width="700"></p> -->
 
 ## How It Works
 
