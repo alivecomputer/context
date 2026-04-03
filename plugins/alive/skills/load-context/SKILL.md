@@ -57,7 +57,21 @@ Show `>` reads as you go:
 > _kernel/insights.md       4 domain knowledge sections
 ```
 
-**Backward compat:** Check `_kernel/now.json` first. If not found, fall back to `_kernel/_generated/now.json` (v2 path). If the v2 format is found (no `bundles` or `tasks` data in the JSON), note that deeper file reads may be needed for full context — the v2 now.json doesn't carry bundle/task summaries.
+**Backward compat fallback chain:**
+1. `_kernel/now.json` (v3)
+2. `_kernel/_generated/now.json` (v2)
+3. `now.md` at walnut root or `_core/now.md` (v1)
+
+If a legacy format is found, surface the upgrade warning before continuing:
+```
+╭─ 🐿️ this walnut is on an older version
+│  Found v2 state at _kernel/_generated/now.json.
+│  The system works but projections, tasks, and world speed are degraded.
+│
+│  ▸ Run /alive:system-upgrade to migrate.
+╰─
+```
+If NOTHING is found, the walnut has no state — read `_kernel/log.md` as last resort.
 
 ### Displaying now.json
 

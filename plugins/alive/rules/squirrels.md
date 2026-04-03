@@ -48,7 +48,7 @@ Show `|` reads. If you haven't read the file, say so — don't invent what might
 
 After context compaction, re-read the brief pack before continuing. Don't trust memory of files read before compaction.
 
-**Backward compat:** If `_kernel/now.json` doesn't exist, try `_kernel/_generated/now.json` (v2 path).
+**Backward compat:** If `_kernel/now.json` doesn't exist, try `_kernel/_generated/now.json` (v2), then `now.md` at walnut root or `_core/now.md` (v1). If a legacy format is found, surface the upgrade warning.
 
 ### 2. Capture Proactively
 
@@ -189,7 +189,7 @@ That's it. Three files. Everything the squirrel needs to orient is in these thre
 
 Task data, bundle state, recent session history — all of it lives in `now.json`, projected there by `project.py` after every save. The agent does NOT read bundle manifests, task files, or squirrel entries at load time. The projection script has already aggregated all of that into `now.json`.
 
-**Backward compat:** If `_kernel/now.json` doesn't exist, try `_kernel/_generated/now.json` (v2 path). If neither exists, fall back to reading `*/context.manifest.yaml` frontmatter directly (v2 behavior).
+**Backward compat:** If `_kernel/now.json` doesn't exist, try `_kernel/_generated/now.json` (v2), then `now.md` at walnut root or `_core/now.md` (v1). If a legacy format is found, surface the upgrade warning. If neither exists, fall back to reading `*/context.manifest.yaml` frontmatter directly (v2 behavior).
 
 After context compaction, re-read the brief pack before continuing.
 
