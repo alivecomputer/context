@@ -328,14 +328,21 @@ EXIT (session actually ends)
 
 ## Subagent Architecture
 
-The squirrel spawns background agents for atomic tasks. These agents receive a brief pack so they operate inside the ALIVE system without re-discovery.
+The squirrel spawns background agents for atomic tasks. Every agent MUST receive the subagent brief so it understands the ALIVE system.
 
-**Brief pack location:** `.alive/_generated/subagent-brief.md` — injected into all spawned agents automatically.
+**Brief pack location:** `.alive/_generated/subagent-brief.md`
+
+**INJECTION IS MANUAL — NOT AUTOMATIC.** Claude Code does not auto-inject files into Agent tool calls. Before dispatching ANY agent, the squirrel must:
+1. Read `.alive/_generated/subagent-brief.md` (once per session, cache the content)
+2. Prepend the brief content to every Agent prompt: `"CONTEXT:\n{brief_content}\n\nTASK:\n{actual_task}"`
+
+If you skip this, the subagent will not know about walnuts, bundles, tasks.py, stash mechanics, or file structure. It WILL make mistakes.
 
 **Brief pack contains:**
 - System vocabulary and naming conventions
-- Current walnut path and key.md summary
-- File structure expectations (`_kernel/`, flat bundles in walnut root)
+- File structure expectations (v3: flat `_kernel/`, flat bundles, no `bundles/` container)
+- What agents can and cannot do
+- Critical rules (stash is conversation-only, now.json is read-only, tasks are script-operated)
 - `tasks.json` format (not `tasks.md`)
 - Read-only vs write-permitted paths
 - Skill namespace (`alive:*`)
