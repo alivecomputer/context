@@ -7,12 +7,12 @@ Subcommands: add, done, drop, edit, list, summary
 """
 
 import argparse
+import getpass
 import json
 import os
 import re
 import sys
 from datetime import datetime, timedelta
-from pathlib import Path
 
 
 # ---------------------------------------------------------------------------
@@ -288,7 +288,7 @@ def cmd_done(args):
 
     task["status"] = "done"
     task["completed"] = _today()
-    task["completed_by"] = args.by or os.environ.get("USER", "unknown")
+    task["completed_by"] = args.by or getpass.getuser()
 
     completed_data["completed"].append(task)
     _atomic_write(completed_path, completed_data)

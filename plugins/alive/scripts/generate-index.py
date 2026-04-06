@@ -24,7 +24,6 @@ import sys
 import re
 import json
 from datetime import datetime, timezone
-from pathlib import Path
 
 
 def extract_frontmatter(filepath):

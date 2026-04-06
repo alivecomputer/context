@@ -31,8 +31,12 @@ def main():
     json_file = os.path.join(world_root, '.alive', '_index.json')
     html_file = os.path.join(world_root, '.alive', 'context-graph.html')
 
-    with open(json_file, 'r', encoding='utf-8') as f:
-        data = json.load(f)
+    try:
+        with open(json_file, 'r', encoding='utf-8') as f:
+            data = json.load(f)
+    except (IOError, json.JSONDecodeError) as e:
+        print(f"Error reading {json_file}: {e}", file=sys.stderr)
+        sys.exit(1)
 
     stats = data['stats']
     walnuts = data['walnuts']
@@ -54,7 +58,7 @@ def main():
         try:
             days_since = (datetime.strptime(today, '%Y-%m-%d') -
                          datetime.strptime(updated, '%Y-%m-%d')).days
-        except:
+        except (ValueError, TypeError, KeyError):
             days_since = 30
 
         if capsule_count >= 15: size = 20
@@ -129,7 +133,7 @@ def main():
         import re
         key_path = os.path.join(world_root, '.alive', 'key.md')
         if os.path.exists(key_path):
-            with open(key_path) as f:
+            with open(key_path, encoding='utf-8') as f:
                 content = f.read()
             m = re.search(r'^name:\s*(.+)$', content, re.MULTILINE)
             if m:
@@ -148,7 +152,7 @@ def main():
     try:
         key_path = os.path.join(world_root, '.alive', 'key.md')
         if os.path.exists(key_path):
-            with open(key_path) as f:
+            with open(key_path, encoding='utf-8') as f:
                 content = f.read()
             # Parse wikilinks from links: field
             links_match = re.search(r'^links:\s*(.+)$', content, re.MULTILINE)
