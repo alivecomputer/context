@@ -161,7 +161,7 @@ Do not panic about context usage. Do not suggest ending a session, starting a fr
 
 Always have enough state on disk that a crash, compaction, or abrupt exit doesn't lose the session. This means:
 
-- Stash checkpoint every 5 items or 20 minutes (shadow-write to squirrel YAML)
+- Save IS the checkpoint — no automatic mid-session shadow-writes. If the session crashes before a save, the transcript JSONL is the recovery source (via `alive:session-context-rebuild`).
 - Action log maintained in squirrel YAML throughout the session
 - `recovery_state` written to squirrel YAML so the next session knows exactly where things stopped
 
@@ -578,6 +578,6 @@ Mid-session saves reset the stash but don't end the session. The squirrel return
 - Stash on change only. No change = no stash shown.
 - Every stash add includes a remove prompt (-> drop?)
 - If 30+ minutes pass without stashing, scan back — decisions were probably made
-- Stash checkpoint: every 5 items or 20 minutes, shadow-write to squirrel YAML (crash insurance)
+- Stash checkpoint: save IS the checkpoint — no automatic mid-session shadow-writes
 - Resolved questions don't stay in stash — they become decisions (log) or insights (if evergreen)
 - At save: group by type (decisions / tasks / notes / insight candidates)
