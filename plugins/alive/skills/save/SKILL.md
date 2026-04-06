@@ -22,7 +22,7 @@ Read these in parallel before presenting the stash or writing anything:
 - `_kernel/log.md` — first ~100 lines (recent entries — what have previous sessions covered?)
 - Active bundle's `context.manifest.yaml` — if `now.json` has a `next.bundle` value, read that bundle's manifest
 
-**Do NOT read `bundles/*/tasks.md`** — task data lives in `now.json` already, or call `tasks.py list --walnut {path}` if you need specific detail.
+**Do NOT read task files directly** — task data lives in `now.json` already, or call `tasks.py list --walnut {path}` if you need specific detail.
 
 **Backward compat:** If `_kernel/now.json` does not exist, check `_kernel/_generated/now.json` as a fallback.
 

@@ -32,7 +32,7 @@ published: []
 ## Context
 
 <!-- Standing context that any new squirrel needs to understand this walnut.
-     Not decisions (log.md). Not current state (now.md). Not domain knowledge
+     Not decisions (log.md). Not current state (now.json). Not domain knowledge
      (insights.md). This is "what is this thing and why does it exist."
 
      Example:

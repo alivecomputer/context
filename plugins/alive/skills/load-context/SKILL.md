@@ -141,7 +141,7 @@ If `now.json` has a `bundle:` field pointing to an active bundle, offer to deep-
 
 **Deep load reads:**
 
-1. **`bundles/{name}/context.manifest.yaml`** — full file (context, changelog, work log, session history)
+1. **`{name}/context.manifest.yaml`** — full file (context, changelog, work log, session history)
 2. **`tasks.py list --walnut {path} --bundle {name}`** — call the script for the detailed task view. Do NOT read `tasks.json` directly; the script is the interface.
 3. **Write `active_sessions:` entry** to the bundle's `context.manifest.yaml` — claim this session so other agents know you're here.
 
