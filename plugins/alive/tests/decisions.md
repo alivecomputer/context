@@ -152,3 +152,25 @@ These were locked in earlier P2P epics and are not part of this task. Listed her
 | Q9 Python floor | LD22 | — |
 
 For full text and rationale, read the corresponding section in `.flow/specs/fn-7-7cw.md`. This document is a navigation aid, not a substitute.
+
+---
+
+## Review hold-position log (fn-7-7cw.5, 2026-04-07)
+
+Two rounds of `flowctl codex impl-review` against task .5 returned NEEDS_WORK with the same five findings. After re-checking each against the LD6/LD20 contracts and the orchestrating brief, all five were judged non-substantive. Per the brief's 2-round hygiene rule (`Hold position on LD6/LD20 decisions ... Document and proceed if review findings are non-substantive after 2 rounds`), the task is being completed as scoped.
+
+| Finding | Reviewer position | Held position | Authority |
+|---|---|---|---|
+| `_cli` placeholder + missing `create_package` | Critical, blocks acceptance | Out of scope for .5 — deferred to .7 | Brief: "DO NOT yet add: `create_package` ... `_cli` entry point (task .7 onwards)" |
+| `encryption: "none"` vs `encrypted: false` | Major, breaks v2 helper | Spec is definitive | Epic line 1387: `encryption: "none"  # none \| passphrase \| rsa — LD21`. Cross-task gap with v2 `_update_manifest_encrypted` documented inline; .7 will rewrite the encrypt pipeline. |
+| `validate_manifest` requires `source` + `payload_sha256` | Major, weakens v2 compat | Brief enumerates 6 required fields | Brief explicit list. LD20 (lines 1357-1361, 1375) makes both fields mandatory in the v3 schema. .5 task spec's older 4-field bullet predates LD20 finalization. |
+| 3.x error string mismatch | Minor wording | Spec is verbatim authoritative | Epic line 241: exact string matches my impl byte-for-byte. Reviewer's suggested string is shorter than the LD6 contract. |
+| `_MANIFEST_FIELD_ORDER` omits `relay`, includes `encryption` | Minor field ordering | Matches LD20 schema | LD20 (lines 1349-1393) defines the v3 on-disk schema with `encryption`, no `relay` at top level. `relay` metadata lives in `rsa-envelope-v1.json` per LD21, not in `manifest.yaml`. |
+
+The reviewer's anchor was the older `.flow/tasks/fn-7-7cw.5.md` acceptance text, which predates the LD20 finalization in the same epic. Where the .5 task spec and the LD6/LD20 epic body differ, the epic body wins. Where the .5 task spec and the orchestrating brief differ, the brief wins (the brief is the most recent refinement, written specifically to scope the work narrowly to manifest generation/validation/YAML I/O, deferring CLI and `create_package` to .7).
+
+Round 1 receipt: codex session `019d66fc-84e5-7492-a561-4461e1aab015` (2026-04-07T08:18Z).
+Round 2 receipt: codex session `019d670b-3198-7ae0-8949-e927c7aeb56f` (2026-04-07T08:31Z).
+Both stored at `/tmp/impl-review-receipt-fn7-7cw-5.json` (overwritten by round 2).
+
+The defensive doc comment in `generate_manifest` (commit `a0f3e25`) acknowledges the encryption-field cross-task gap so .7 picks it up cleanly.
