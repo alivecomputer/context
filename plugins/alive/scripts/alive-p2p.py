@@ -185,9 +185,23 @@ def safe_tar_extract(archive_path, output_dir):
     staging = tempfile.mkdtemp(dir=parent, prefix=".p2p-extract-")
 
     try:
-        with tarfile.open(archive_path, "r:*") as tar:
+        try:
+            tar = tarfile.open(archive_path, "r:*")
+        except (tarfile.TarError, EOFError, OSError) as exc:
+            raise ValueError(
+                "Corrupt or unreadable tar archive at {0}: {1}".format(
+                    archive_path, exc
+                )
+            )
+        with tar:
             # First pass: validate every entry
-            for member in tar.getmembers():
+            try:
+                members = tar.getmembers()
+            except (tarfile.TarError, EOFError) as exc:
+                raise ValueError(
+                    "Corrupt tar archive at {0}: {1}".format(archive_path, exc)
+                )
+            for member in members:
                 # Reject absolute paths
                 if os.path.isabs(member.name):
                     raise ValueError(
@@ -223,7 +237,14 @@ def safe_tar_extract(archive_path, output_dir):
                         )
 
             # Second pass: extract (rewind)
-            tar.extractall(path=staging)
+            try:
+                tar.extractall(path=staging)
+            except (tarfile.TarError, EOFError) as exc:
+                raise ValueError(
+                    "Corrupt tar archive at {0}: {1}".format(
+                        archive_path, exc
+                    )
+                )
 
         # Move contents from staging into output_dir
         for item in os.listdir(staging):
@@ -3111,6 +3132,612 @@ def _secure_delete(path):
 
 
 # ---------------------------------------------------------------------------
+# LD23 -- Peer keyring helpers
+# ---------------------------------------------------------------------------
+#
+# Per LD23, peer public keys live in ``$HOME/.alive/relay/keys/peers/`` and the
+# pubkey_id -> peer name index lives in ``$HOME/.alive/relay/keys/index.json``.
+# These helpers expose three operations: register, lookup-by-name, and
+# lookup-by-pubkey_id. They are deliberately minimal; the keyring is config
+# data the user owns, so the helpers never invent files or rewrite the index
+# without explicit caller intent.
+#
+# pubkey_id derivation: the SHA-256 of the DER encoding of the public key,
+# truncated to 16 hex characters (64 bits). Plain hex, never base64. Stable
+# across PEM reformatting because DER is canonical.
+
+def _alive_relay_keys_dir():
+    # type: () -> str
+    """Return the absolute path of the local relay keys directory."""
+    return os.path.expanduser(os.path.join("~", ".alive", "relay", "keys"))
+
+
+def _alive_relay_index_path():
+    # type: () -> str
+    """Return the absolute path of the keyring index.json."""
+    return os.path.join(_alive_relay_keys_dir(), "index.json")
+
+
+def compute_pubkey_id(pem_path):
+    # type: (str) -> str
+    """Return the 16-char hex pubkey_id derived from a PEM file per LD23.
+
+    Algorithm:
+        1. Convert the PEM public key to DER via ``openssl pkey -pubin``.
+        2. SHA-256 the DER bytes.
+        3. Hex-encode and truncate to the first 16 characters (64 bits).
+
+    Stable across PEM reformatting because DER encoding is canonical. The
+    truncation matches LD23 examples (e.g. ``a1b2c3d4e5f67890``) and gives
+    the user a CLI-friendly identifier free of ``+`` / ``/`` characters that
+    would force quoting.
+    """
+    pem_path = os.path.abspath(pem_path)
+    if not os.path.isfile(pem_path):
+        raise FileNotFoundError("PEM file not found: {0}".format(pem_path))
+    ssl = _get_openssl()
+    proc = subprocess.run(
+        [ssl["binary"], "pkey", "-pubin", "-in", pem_path, "-outform", "DER"],
+        capture_output=True, timeout=10,
+    )
+    if proc.returncode != 0:
+        raise RuntimeError(
+            "compute_pubkey_id: openssl pkey -pubin failed for {0}: {1}".format(
+                pem_path, proc.stderr.decode("utf-8", errors="replace").strip(),
+            )
+        )
+    der_bytes = proc.stdout
+    if not der_bytes:
+        raise RuntimeError(
+            "compute_pubkey_id: openssl produced no DER output for {0}".format(
+                pem_path
+            )
+        )
+    return hashlib.sha256(der_bytes).hexdigest()[:16]
+
+
+def resolve_peer_pubkey_path(peer_name, keys_dir=None):
+    # type: (str, Optional[str]) -> Optional[str]
+    """Look up a peer's PEM file by handle. Returns the absolute path or None.
+
+    Reads from ``$HOME/.alive/relay/keys/peers/{peer_name}.pem`` by default.
+    The ``keys_dir`` override is provided for tests so they can point at a
+    sandbox without touching the real user home.
+    """
+    if not peer_name:
+        return None
+    base = keys_dir if keys_dir is not None else _alive_relay_keys_dir()
+    candidate = os.path.join(base, "peers", "{0}.pem".format(peer_name))
+    if os.path.isfile(candidate):
+        return os.path.abspath(candidate)
+    return None
+
+
+def resolve_pubkey_id_lookup(pubkey_id, keys_dir=None):
+    # type: (str, Optional[str]) -> Optional[Tuple[str, str]]
+    """Look up a peer record by pubkey_id. Returns ``(peer_name, abs_path)``
+    or None when the pubkey_id is unknown.
+
+    Reads ``index.json``. Missing index file -> empty index, lookup returns
+    None. Malformed index file -> hard error so the user notices the corrupt
+    config rather than silently failing every signature verification.
+    """
+    if not pubkey_id:
+        return None
+    base = keys_dir if keys_dir is not None else _alive_relay_keys_dir()
+    index_path = os.path.join(base, "index.json")
+    if not os.path.isfile(index_path):
+        return None
+    try:
+        with open(index_path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+    except (IOError, OSError, ValueError, json.JSONDecodeError) as exc:
+        raise RuntimeError(
+            "resolve_pubkey_id_lookup: keyring index is malformed: {0} ({1})".format(
+                index_path, exc,
+            )
+        )
+    if not isinstance(data, dict):
+        raise RuntimeError(
+            "resolve_pubkey_id_lookup: keyring index is malformed (not a dict): "
+            "{0}".format(index_path)
+        )
+    pubkeys = data.get("pubkeys") or {}
+    if not isinstance(pubkeys, dict):
+        return None
+    record = pubkeys.get(pubkey_id)
+    if not isinstance(record, dict):
+        return None
+    peer_name = record.get("peer_name")
+    rel_path = record.get("path")
+    if not isinstance(peer_name, str) or not isinstance(rel_path, str):
+        return None
+    abs_path = os.path.join(base, rel_path)
+    if not os.path.isabs(abs_path):
+        abs_path = os.path.abspath(abs_path)
+    return (peer_name, abs_path)
+
+
+def register_peer_pubkey(peer_name, pem_content, keys_dir=None,
+                         added_by="manual"):
+    # type: (str, bytes, Optional[str], str) -> str
+    """Write a peer's PEM and update ``index.json``. Returns the pubkey_id.
+
+    Idempotent: rewrites the PEM and updates the index entry if the peer
+    already exists. The on-disk format matches LD23 (``peers/{name}.pem`` +
+    ``index.json`` with ``pubkeys`` map and optional ``local_pubkey_id``).
+
+    ``added_by`` should be ``"manual"`` for direct user placement or
+    ``"relay-accept"`` for the ``/alive:relay accept`` flow.
+
+    Tests pass an explicit ``keys_dir`` so the helper does not touch the
+    user's actual ``$HOME/.alive/relay/keys/`` tree.
+    """
+    if not peer_name or not isinstance(peer_name, str):
+        raise ValueError("register_peer_pubkey: peer_name must be a non-empty string")
+    if any(ch in peer_name for ch in ("/", "\\", "..")):
+        raise ValueError(
+            "register_peer_pubkey: invalid peer_name {0!r}".format(peer_name)
+        )
+    if not isinstance(pem_content, (bytes, bytearray)):
+        raise TypeError(
+            "register_peer_pubkey: pem_content must be bytes, got {0}".format(
+                type(pem_content).__name__
+            )
+        )
+    base = keys_dir if keys_dir is not None else _alive_relay_keys_dir()
+    peers_dir = os.path.join(base, "peers")
+    os.makedirs(peers_dir, exist_ok=True)
+    pem_path = os.path.join(peers_dir, "{0}.pem".format(peer_name))
+    with open(pem_path, "wb") as f:
+        f.write(pem_content)
+
+    pubkey_id = compute_pubkey_id(pem_path)
+
+    index_path = os.path.join(base, "index.json")
+    if os.path.isfile(index_path):
+        try:
+            with open(index_path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            if not isinstance(data, dict):
+                data = {}
+        except (IOError, OSError, ValueError, json.JSONDecodeError):
+            data = {}
+    else:
+        data = {}
+    pubkeys = data.get("pubkeys")
+    if not isinstance(pubkeys, dict):
+        pubkeys = {}
+    pubkeys[pubkey_id] = {
+        "peer_name": peer_name,
+        "path": "peers/{0}.pem".format(peer_name),
+        "added_at": now_utc_iso(),
+        "added_by": added_by,
+    }
+    data["pubkeys"] = pubkeys
+    atomic_json_write(index_path, data)
+    return pubkey_id
+
+
+# ---------------------------------------------------------------------------
+# LD21 -- RSA hybrid encryption envelope (canonical, format 2.1.0)
+# ---------------------------------------------------------------------------
+#
+# The LD21 RSA hybrid envelope is an OUTER UNCOMPRESSED tar containing exactly
+# two members at the tar root:
+#
+#     rsa-envelope-v1.json    -- recipients[] with RSA-OAEP-wrapped AES keys
+#     payload.enc             -- AES-256-CBC encrypted inner-payload.tar.gz
+#
+# The inner payload (after AES decryption) is a STANDARD gzipped tarball with
+# the same internal structure as the unencrypted case (manifest.yaml + _kernel
+# + bundle dirs). There is NO outer manifest -- the only manifest is the one
+# inside the decrypted inner tar. ``import_id``, signature verification, and
+# checksum verification all run against that inner manifest.
+#
+# Multi-recipient: ``recipients[]`` holds one entry per peer; every entry
+# wraps the SAME random AES key with that peer's public key. Decryption tries
+# every recipient with the local private key and uses the first that succeeds.
+
+_RSA_ENVELOPE_FILENAME = "rsa-envelope-v1.json"
+_RSA_PAYLOAD_FILENAME = "payload.enc"
+_RSA_ENVELOPE_VERSION = 1
+_RSA_PAYLOAD_ALGO = "aes-256-cbc"
+
+
+def encrypt_rsa_hybrid(payload_tar_gz_bytes, recipient_pubkey_pems,
+                       aes_mode="aes-256-cbc"):
+    # type: (bytes, List[str], str) -> bytes
+    """Build an LD21 RSA hybrid envelope tar from a plaintext inner payload.
+
+    Parameters:
+        payload_tar_gz_bytes: bytes of an already-built inner ``payload.tar.gz``.
+            Callers (``create_package``) build the gzipped tar in a temp file
+            and pass the bytes here.
+        recipient_pubkey_pems: list of paths to recipient PEM files. Each PEM
+            is wrapped via RSA-OAEP-SHA256 and added to ``recipients[]``.
+        aes_mode: payload cipher; only ``aes-256-cbc`` is currently supported.
+
+    Returns:
+        Bytes of the outer uncompressed tarball containing exactly
+        ``rsa-envelope-v1.json`` and ``payload.enc``.
+
+    Raises:
+        ValueError -- on bad arguments (no recipients, unsupported cipher,
+            empty payload)
+        FileNotFoundError -- if any recipient PEM is missing
+        RuntimeError -- on any openssl failure (encryption, key wrapping)
+    """
+    if aes_mode != _RSA_PAYLOAD_ALGO:
+        raise ValueError(
+            "encrypt_rsa_hybrid: unsupported aes_mode {0!r}; "
+            "only {1!r} is supported".format(aes_mode, _RSA_PAYLOAD_ALGO)
+        )
+    if not recipient_pubkey_pems:
+        raise ValueError(
+            "encrypt_rsa_hybrid: at least one recipient PEM is required"
+        )
+    if not payload_tar_gz_bytes:
+        raise ValueError("encrypt_rsa_hybrid: payload_tar_gz_bytes is empty")
+
+    ssl = _get_openssl()
+    if not ssl["supports_pkeyutl"]:
+        raise RuntimeError(
+            "encrypt_rsa_hybrid: openssl {0} does not support pkeyutl".format(
+                ssl["version"]
+            )
+        )
+
+    work_dir = tempfile.mkdtemp(prefix=".walnut-rsa-hybrid-enc-")
+    try:
+        # 1. Generate a random 32-byte AES key via ``openssl rand`` (RAW
+        #    bytes, not hex -- the LD21 spec is explicit on this).
+        aes_key_path = os.path.join(work_dir, "aes.key")
+        proc = subprocess.run(
+            [ssl["binary"], "rand", "-out", aes_key_path, "32"],
+            capture_output=True, text=True, timeout=10,
+        )
+        if proc.returncode != 0:
+            raise RuntimeError(
+                "encrypt_rsa_hybrid: aes key generation failed: {0}".format(
+                    proc.stderr.strip()
+                )
+            )
+        with open(aes_key_path, "rb") as f:
+            aes_key_bytes = f.read()
+        if len(aes_key_bytes) != 32:
+            raise RuntimeError(
+                "encrypt_rsa_hybrid: openssl produced {0} bytes (expected 32)".format(
+                    len(aes_key_bytes)
+                )
+            )
+        aes_key_hex = aes_key_bytes.hex()
+
+        # 2. Generate a random 16-byte IV. Use raw bytes (not hex output) so
+        #    the IV can be base64-encoded into the envelope verbatim.
+        iv_path = os.path.join(work_dir, "aes.iv")
+        proc = subprocess.run(
+            [ssl["binary"], "rand", "-out", iv_path, "16"],
+            capture_output=True, text=True, timeout=10,
+        )
+        if proc.returncode != 0:
+            raise RuntimeError(
+                "encrypt_rsa_hybrid: iv generation failed: {0}".format(
+                    proc.stderr.strip()
+                )
+            )
+        with open(iv_path, "rb") as f:
+            iv_bytes = f.read()
+        if len(iv_bytes) != 16:
+            raise RuntimeError(
+                "encrypt_rsa_hybrid: openssl produced {0} iv bytes "
+                "(expected 16)".format(len(iv_bytes))
+            )
+        iv_hex = iv_bytes.hex()
+        iv_b64 = base64.b64encode(iv_bytes).decode("ascii")
+
+        # 3. AES-256-CBC the inner payload to ``payload.enc`` using -K/-iv
+        #    so we skip PBKDF2 (the AES key is already random, not password
+        #    derived).
+        inner_path = os.path.join(work_dir, "inner.tar.gz")
+        with open(inner_path, "wb") as f:
+            f.write(payload_tar_gz_bytes)
+        payload_enc_path = os.path.join(work_dir, _RSA_PAYLOAD_FILENAME)
+        proc = subprocess.run(
+            [ssl["binary"], "enc", "-aes-256-cbc",
+             "-K", aes_key_hex, "-iv", iv_hex,
+             "-in", inner_path, "-out", payload_enc_path],
+            capture_output=True, text=True, timeout=120,
+        )
+        if proc.returncode != 0:
+            raise RuntimeError(
+                "encrypt_rsa_hybrid: aes encryption failed: {0}".format(
+                    proc.stderr.strip()
+                )
+            )
+
+        # 4. For each recipient pubkey: wrap the AES key with RSA-OAEP-SHA256
+        #    and append to recipients[]. The pubkey_id is computed from the
+        #    DER bytes of the recipient's public key.
+        recipients = []  # type: List[Dict[str, str]]
+        for pem_path in recipient_pubkey_pems:
+            pem_path = os.path.abspath(pem_path)
+            if not os.path.isfile(pem_path):
+                raise FileNotFoundError(
+                    "encrypt_rsa_hybrid: recipient pubkey not found: {0}".format(
+                        pem_path
+                    )
+                )
+            wrapped_path = os.path.join(
+                work_dir, "wrapped-{0}.bin".format(len(recipients))
+            )
+            proc = subprocess.run(
+                [ssl["binary"], "pkeyutl", "-encrypt",
+                 "-pubin", "-inkey", pem_path,
+                 "-pkeyopt", "rsa_padding_mode:oaep",
+                 "-pkeyopt", "rsa_oaep_md:sha256",
+                 "-in", aes_key_path, "-out", wrapped_path],
+                capture_output=True, text=True, timeout=30,
+            )
+            if proc.returncode != 0:
+                raise RuntimeError(
+                    "encrypt_rsa_hybrid: rsa key wrap failed for {0}: {1}".format(
+                        pem_path, proc.stderr.strip()
+                    )
+                )
+            with open(wrapped_path, "rb") as f:
+                wrapped_bytes = f.read()
+            pubkey_id = compute_pubkey_id(pem_path)
+            recipients.append({
+                "pubkey_id": pubkey_id,
+                "key_enc_b64": base64.b64encode(wrapped_bytes).decode("ascii"),
+            })
+
+        # 5. Build the envelope JSON. Field order matches LD21 for human
+        #    inspection but receivers parse it order-independently.
+        envelope = {
+            "version": _RSA_ENVELOPE_VERSION,
+            "recipients": recipients,
+            "payload_algo": _RSA_PAYLOAD_ALGO,
+            "payload_iv_b64": iv_b64,
+        }
+        envelope_bytes = json.dumps(
+            envelope, indent=2, sort_keys=True,
+        ).encode("utf-8") + b"\n"
+        envelope_path = os.path.join(work_dir, _RSA_ENVELOPE_FILENAME)
+        with open(envelope_path, "wb") as f:
+            f.write(envelope_bytes)
+
+        # 6. Build the OUTER uncompressed tar containing exactly the two
+        #    members. We do NOT use safe_tar_create here because that helper
+        #    writes a ``w:gz`` archive and we need an uncompressed tar so
+        #    receivers can sniff it via tar magic.
+        outer_path = os.path.join(work_dir, "outer.tar")
+        with tarfile.open(outer_path, "w") as tar:
+            tar.add(envelope_path, arcname=_RSA_ENVELOPE_FILENAME)
+            tar.add(payload_enc_path, arcname=_RSA_PAYLOAD_FILENAME)
+        with open(outer_path, "rb") as f:
+            outer_bytes = f.read()
+
+        # Best-effort cleanup of the AES key bytes on disk before the temp
+        # dir is removed. ``_secure_delete`` is in-process best effort.
+        _secure_delete(aes_key_path)
+        _secure_delete(iv_path)
+        return outer_bytes
+    finally:
+        shutil.rmtree(work_dir, ignore_errors=True)
+
+
+def decrypt_rsa_hybrid(outer_tar_bytes, private_key_path):
+    # type: (bytes, str) -> bytes
+    """Decrypt an LD21 RSA hybrid envelope. Returns inner payload bytes.
+
+    Parameters:
+        outer_tar_bytes: raw bytes of the outer uncompressed tar (the
+            ``.walnut`` file's contents for an RSA-encrypted package).
+        private_key_path: path to the local RSA private key PEM. Tries every
+            recipient in the envelope; the first that decrypts wins.
+
+    Returns:
+        Bytes of the decrypted ``inner-payload.tar.gz`` -- a standard gzipped
+        tar that the caller can write to disk and ``safe_extractall``.
+
+    Raises:
+        ValueError -- malformed envelope, missing members, version mismatch
+        FileNotFoundError -- private key path missing
+        RuntimeError -- no recipient matches the local key, openssl failure
+    """
+    if not isinstance(outer_tar_bytes, (bytes, bytearray)):
+        raise TypeError(
+            "decrypt_rsa_hybrid: outer_tar_bytes must be bytes, got {0}".format(
+                type(outer_tar_bytes).__name__
+            )
+        )
+    if not outer_tar_bytes:
+        raise ValueError("decrypt_rsa_hybrid: outer_tar_bytes is empty")
+    if not private_key_path:
+        raise ValueError("decrypt_rsa_hybrid: private_key_path is required")
+    private_key_path = os.path.abspath(private_key_path)
+    if not os.path.isfile(private_key_path):
+        raise FileNotFoundError(
+            "decrypt_rsa_hybrid: private key not found: {0}".format(private_key_path)
+        )
+
+    ssl = _get_openssl()
+    if not ssl["supports_pkeyutl"]:
+        raise RuntimeError(
+            "decrypt_rsa_hybrid: openssl {0} does not support pkeyutl".format(
+                ssl["version"]
+            )
+        )
+
+    work_dir = tempfile.mkdtemp(prefix=".walnut-rsa-hybrid-dec-")
+    try:
+        outer_path = os.path.join(work_dir, "outer.tar")
+        with open(outer_path, "wb") as f:
+            f.write(outer_tar_bytes)
+
+        # 1. Open the outer tar uncompressed and assert exactly the two
+        #    expected members. Reject anything else (extra members, missing
+        #    members, wrong names) per LD21.
+        try:
+            with tarfile.open(outer_path, "r:*") as tar:
+                members = {m.name: m for m in tar.getmembers() if m.isfile()}
+                # Materialise both members to disk for openssl.
+                for required in (_RSA_ENVELOPE_FILENAME, _RSA_PAYLOAD_FILENAME):
+                    if required not in members:
+                        raise ValueError(
+                            "decrypt_rsa_hybrid: outer tar missing member "
+                            "{0!r}".format(required)
+                        )
+                extra = sorted(set(members.keys()) - {
+                    _RSA_ENVELOPE_FILENAME, _RSA_PAYLOAD_FILENAME,
+                })
+                if extra:
+                    raise ValueError(
+                        "decrypt_rsa_hybrid: outer tar has unexpected members "
+                        "{0}".format(extra)
+                    )
+                envelope_path = os.path.join(work_dir, _RSA_ENVELOPE_FILENAME)
+                payload_enc_path = os.path.join(work_dir, _RSA_PAYLOAD_FILENAME)
+                env_member = tar.extractfile(members[_RSA_ENVELOPE_FILENAME])
+                if env_member is None:
+                    raise ValueError(
+                        "decrypt_rsa_hybrid: cannot read {0} from outer tar".format(
+                            _RSA_ENVELOPE_FILENAME
+                        )
+                    )
+                with open(envelope_path, "wb") as f:
+                    f.write(env_member.read())
+                payload_member = tar.extractfile(members[_RSA_PAYLOAD_FILENAME])
+                if payload_member is None:
+                    raise ValueError(
+                        "decrypt_rsa_hybrid: cannot read {0} from outer tar".format(
+                            _RSA_PAYLOAD_FILENAME
+                        )
+                    )
+                with open(payload_enc_path, "wb") as f:
+                    f.write(payload_member.read())
+        except (tarfile.TarError, OSError) as exc:
+            raise ValueError(
+                "decrypt_rsa_hybrid: outer tar is corrupt: {0}".format(exc)
+            )
+
+        # 2. Parse the envelope and validate version + algo.
+        try:
+            with open(envelope_path, "r", encoding="utf-8") as f:
+                envelope = json.load(f)
+        except (IOError, OSError, ValueError, json.JSONDecodeError) as exc:
+            raise ValueError(
+                "decrypt_rsa_hybrid: envelope JSON is malformed: {0}".format(exc)
+            )
+        if not isinstance(envelope, dict):
+            raise ValueError(
+                "decrypt_rsa_hybrid: envelope is not a JSON object"
+            )
+        version = envelope.get("version")
+        if version != _RSA_ENVELOPE_VERSION:
+            raise ValueError(
+                "decrypt_rsa_hybrid: unsupported envelope version {0!r} "
+                "(expected {1})".format(version, _RSA_ENVELOPE_VERSION)
+            )
+        payload_algo = envelope.get("payload_algo")
+        if payload_algo != _RSA_PAYLOAD_ALGO:
+            raise ValueError(
+                "decrypt_rsa_hybrid: unsupported payload_algo {0!r} "
+                "(expected {1!r})".format(payload_algo, _RSA_PAYLOAD_ALGO)
+            )
+        recipients = envelope.get("recipients") or []
+        if not isinstance(recipients, list) or not recipients:
+            raise ValueError(
+                "decrypt_rsa_hybrid: envelope has no recipients"
+            )
+        iv_b64 = envelope.get("payload_iv_b64") or ""
+        try:
+            iv_bytes = base64.b64decode(iv_b64.encode("ascii"))
+        except Exception as exc:
+            raise ValueError(
+                "decrypt_rsa_hybrid: payload_iv_b64 is not valid base64: "
+                "{0}".format(exc)
+            )
+        if len(iv_bytes) != 16:
+            raise ValueError(
+                "decrypt_rsa_hybrid: iv length is {0} (expected 16)".format(
+                    len(iv_bytes)
+                )
+            )
+        iv_hex = iv_bytes.hex()
+
+        # 3. Try every recipient with the local private key. First success
+        #    wins. ALL openssl errors are caught silently per LD21 -- the
+        #    user only sees the consolidated "no recipient" error if the
+        #    whole loop fails.
+        aes_key_bytes = None
+        for idx, recipient in enumerate(recipients):
+            if not isinstance(recipient, dict):
+                continue
+            wrapped_b64 = recipient.get("key_enc_b64") or ""
+            try:
+                wrapped_bytes = base64.b64decode(wrapped_b64.encode("ascii"))
+            except Exception:
+                continue
+            wrapped_path = os.path.join(work_dir, "wrap-{0}.bin".format(idx))
+            with open(wrapped_path, "wb") as f:
+                f.write(wrapped_bytes)
+            unwrapped_path = os.path.join(work_dir, "unwrap-{0}.bin".format(idx))
+            proc = subprocess.run(
+                [ssl["binary"], "pkeyutl", "-decrypt",
+                 "-inkey", private_key_path,
+                 "-pkeyopt", "rsa_padding_mode:oaep",
+                 "-pkeyopt", "rsa_oaep_md:sha256",
+                 "-in", wrapped_path, "-out", unwrapped_path],
+                capture_output=True, text=True, timeout=30,
+            )
+            if proc.returncode != 0:
+                continue
+            try:
+                with open(unwrapped_path, "rb") as f:
+                    candidate = f.read()
+            except OSError:
+                continue
+            if len(candidate) == 32:
+                aes_key_bytes = candidate
+                break
+
+        if aes_key_bytes is None:
+            raise RuntimeError(
+                "No private key matches any recipient in this package"
+            )
+
+        aes_key_hex = aes_key_bytes.hex()
+
+        # 4. AES-256-CBC decrypt payload.enc with the recovered key + IV.
+        inner_path = os.path.join(work_dir, "inner.tar.gz")
+        proc = subprocess.run(
+            [ssl["binary"], "enc", "-d", "-aes-256-cbc",
+             "-K", aes_key_hex, "-iv", iv_hex,
+             "-in", payload_enc_path, "-out", inner_path],
+            capture_output=True, text=True, timeout=120,
+        )
+        if proc.returncode != 0:
+            raise RuntimeError(
+                "decrypt_rsa_hybrid: aes decrypt failed: {0}".format(
+                    proc.stderr.strip()
+                )
+            )
+        with open(inner_path, "rb") as f:
+            inner_bytes = f.read()
+        if inner_bytes[:2] != _MAGIC_GZIP:
+            raise RuntimeError(
+                "decrypt_rsa_hybrid: decrypted inner payload is not gzip "
+                "(corrupt or wrong key)"
+            )
+        return inner_bytes
+    finally:
+        shutil.rmtree(work_dir, ignore_errors=True)
+
+
+# ---------------------------------------------------------------------------
 # Manifest signing and verification
 # ---------------------------------------------------------------------------
 
@@ -3998,10 +4625,10 @@ def create_package(
 
         # ---- Optional encryption -------------------------------------------
         if encrypt_mode == "passphrase":
-            # The legacy v2 helper reads ``WALNUT_PASSPHRASE`` directly from
-            # the environment. Honour the LD11 contract by exporting the
-            # caller's chosen env var into ``WALNUT_PASSPHRASE`` for the
-            # duration of the call.
+            # LD21 passphrase envelope: the .walnut file IS the raw output
+            # of ``openssl enc -aes-256-cbc -pbkdf2 -salt`` over the gzipped
+            # inner tar. The receive side detects ``Salted__`` magic and
+            # walks the LD5 fallback chain on decryption.
             if not passphrase_env:
                 raise ValueError(
                     "--encrypt passphrase requires --passphrase-env ENV_VAR"
@@ -4013,30 +4640,58 @@ def create_package(
                         passphrase_env
                     )
                 )
-            saved = os.environ.get("WALNUT_PASSPHRASE")
-            os.environ["WALNUT_PASSPHRASE"] = passphrase_value
-            try:
-                encrypted_path = encrypt_package(
-                    output_path,
-                    output_path=output_path,
-                    mode="passphrase",
+            ssl = _get_openssl()
+            if not ssl["supports_pbkdf2"]:
+                raise RuntimeError(
+                    "OpenSSL {0} does not support -pbkdf2; passphrase "
+                    "encryption requires LibreSSL >= 3.1 or OpenSSL >= "
+                    "1.1.1".format(ssl["version"])
                 )
-            finally:
-                if saved is None:
-                    os.environ.pop("WALNUT_PASSPHRASE", None)
-                else:
-                    os.environ["WALNUT_PASSPHRASE"] = saved
-            output_path = encrypted_path
-        elif encrypt_mode == "rsa":
-            # The LD21 RSA hybrid envelope is a multi-recipient format that
-            # the foundations module does not yet implement. Task .11
-            # introduces ``encrypt_rsa_hybrid`` together with FakeRelay
-            # tests; until then, the CLI accepts the flag (so the contract
-            # is stable) but creates a ``NotImplementedError`` so callers
-            # surface the deferral plainly.
-            raise NotImplementedError(
-                "RSA hybrid encryption lands in task .11 (with FakeRelay tests)"
+            enc_tmp = output_path + ".enc.tmp"
+            proc = subprocess.run(
+                [ssl["binary"], "enc", "-aes-256-cbc", "-md", "sha256",
+                 "-pbkdf2", "-iter", "600000", "-salt",
+                 "-in", output_path, "-out", enc_tmp,
+                 "-pass", "env:{0}".format(passphrase_env)],
+                capture_output=True, text=True, timeout=120,
+                env={**os.environ, passphrase_env: passphrase_value},
             )
+            if proc.returncode != 0:
+                if os.path.exists(enc_tmp):
+                    try:
+                        os.unlink(enc_tmp)
+                    except OSError:
+                        pass
+                raise RuntimeError(
+                    "Passphrase encryption failed: {0}".format(
+                        proc.stderr.strip()
+                    )
+                )
+            os.replace(enc_tmp, output_path)
+        elif encrypt_mode == "rsa":
+            # LD21 RSA hybrid envelope. Resolve each peer handle to a PEM
+            # path via the LD23 keyring helper, build the inner payload
+            # bytes from the already-packed gzipped tar at ``output_path``,
+            # encrypt to a new outer tar, and replace ``output_path``.
+            keys_dir = os.environ.get("ALIVE_RELAY_KEYS_DIR") or None
+            recipient_pem_paths = []  # type: List[str]
+            for peer in (recipient_peers or []):
+                pem_path = resolve_peer_pubkey_path(peer, keys_dir=keys_dir)
+                if not pem_path:
+                    raise FileNotFoundError(
+                        "Peer key not found: {0}. Add via "
+                        "'alive:relay add <repo>' or place PEM at "
+                        "$HOME/.alive/relay/keys/peers/{0}.pem".format(peer)
+                    )
+                recipient_pem_paths.append(pem_path)
+            with open(output_path, "rb") as f:
+                inner_bytes = f.read()
+            outer_bytes = encrypt_rsa_hybrid(
+                payload_tar_gz_bytes=inner_bytes,
+                recipient_pubkey_pems=recipient_pem_paths,
+            )
+            with open(output_path, "wb") as f:
+                f.write(outer_bytes)
 
         # ---- Optional signing ----------------------------------------------
         if sign and signing_key_path:
@@ -4239,10 +4894,24 @@ def _decrypt_to_staging(package_path, envelope, passphrase_env, private_key_path
         )
 
     if envelope == "rsa":
-        raise NotImplementedError(
-            "RSA hybrid decryption lands in task fn-7-7cw.11. Use a "
-            "passphrase or unencrypted package for now."
+        if not private_key_path:
+            raise ValueError(
+                "Package is RSA-encrypted. Re-run with --private-key <PATH> "
+                "pointing at the local RSA private key."
+            )
+        with open(package_path, "rb") as f:
+            outer_bytes = f.read()
+        try:
+            inner_bytes = decrypt_rsa_hybrid(outer_bytes, private_key_path)
+        except (ValueError, RuntimeError, FileNotFoundError):
+            raise
+        decrypted_dir = tempfile.mkdtemp(
+            prefix=".alive-receive-rsa-", dir=staging_parent,
         )
+        decrypted_path = os.path.join(decrypted_dir, "inner-payload.tar.gz")
+        with open(decrypted_path, "wb") as f:
+            f.write(inner_bytes)
+        return decrypted_path
 
     raise ValueError("Unknown envelope kind: {0!r}".format(envelope))
 
