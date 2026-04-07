@@ -69,7 +69,7 @@ Find searches across ALL walnuts by default. Results show which walnut each matc
 │   2. nova-station / _kernel/log.md — 2026-02-23
 │      Decision: go with hybrid shielding approach
 │
-│   3. nova-station / bundles/research/
+│   3. nova-station / research/
 │      2026-02-23-radiation-shielding-options.md
 │
 │  number to load, or refine search.

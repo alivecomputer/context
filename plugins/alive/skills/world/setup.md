@@ -484,13 +484,11 @@ For each walnut in the list:
 ```
 {{domain}}/{{slug}}/
 {{domain}}/{{slug}}/_kernel/
-{{domain}}/{{slug}}/_kernel/_generated/
-{{domain}}/{{slug}}/bundles/
 ```
 
 **Create walnut files from templates:**
 
-For each file in `templates/walnut/` (key.md, now.json, log.md, tasks.md, insights.md):
+For each file in `templates/walnut/` (key.md, log.md, insights.md):
 
 Read the template. Replace variables:
 - `{{name}}` → walnut display name (original casing)
@@ -505,16 +503,14 @@ For key.md specifically:
 - Set `rhythm:` to the walnut's rhythm value
 - If people are associated with this walnut, fill the `## Key People` section
 
-Write each file to `{{domain}}/{{slug}}/_kernel/{{filename}}` (with now.json going to `_kernel/_generated/now.json`).
+Write each file to `{{domain}}/{{slug}}/_kernel/{{filename}}`. Do NOT create `_kernel/_generated/` — v3 kernels are flat. Do NOT create `bundles/` — v3 bundles live flat at the walnut root and are created on demand by `/alive:bundle`. The `tasks.json` + `completed.json` + `now.json` files are created lazily by `scripts/tasks.py` and `scripts/project.py` on first use.
 
 Show:
 ```
 │  ▸ {{domain}}/{{slug}}/
 │  ▸   _kernel/key.md — "{{goal}}"
-│  ▸   _kernel/_generated/now.json — phase: starting
 │  ▸   _kernel/log.md — first entry signed
 │  ▸   _kernel/insights.md — empty, ready
-│  ▸   bundles/ — empty, ready
 ```
 
 #### Step 6: Create people walnuts
@@ -597,11 +593,11 @@ Display this summary. Fill in actual values for every placeholder.
 | `.alive/overrides.md` | User rule customizations (never overwritten by updates) |
 | `.alive/_squirrels/` | Centralized session entries |
 | `[walnut]/_kernel/key.md` | Walnut identity and standing context |
-| `[walnut]/_kernel/_generated/now.json` | Current state synthesis (generated) |
+| `[walnut]/_kernel/now.json` | Current state projection (computed by `scripts/project.py`) |
 | `[walnut]/_kernel/log.md` | Prepend-only event spine |
-| `[walnut]/bundles/*/tasks.md` | Work queue per bundle |
+| `[walnut]/_kernel/tasks.json` | Walnut-scoped task queue (managed by `scripts/tasks.py`) |
 | `[walnut]/_kernel/insights.md` | Evergreen domain knowledge |
-| `[walnut]/bundles/` | Self-contained units of work |
+| `[walnut]/{bundle-name}/` | Self-contained units of work (flat v3 layout, at walnut root) |
 
 ## What Setup Does NOT Do
 

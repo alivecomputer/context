@@ -1,5 +1,5 @@
 ---
-version: 3.0.0
+version: 3.1.0
 runtime: squirrel.core@3.0
 ---
 
@@ -21,12 +21,12 @@ Install: `claude plugin install alive@alivecontext`
 
 When a walnut is active, read these in order before responding:
 1. `_kernel/key.md` — full
-2. `_kernel/now.json` — full
+2. `_kernel/now.json` — full (computed projection via `scripts/project.py`)
 3. `_kernel/insights.md` — frontmatter
 4. `_kernel/log.md` — frontmatter, then first ~100 lines
-5. `.alive/_squirrels/` — scan for unsaved entries
-6. `bundles/` — context.manifest.yaml frontmatter only
-7. `bundles/*/tasks.md` — current task queues per bundle
+5. `_kernel/tasks.json` — current task queue (v3 uses JSON, not markdown)
+6. `.alive/_squirrels/` — scan for unsaved entries
+7. Top-level bundle dirs — `{walnut}/{bundle}/context.manifest.yaml` frontmatter only (v3 flat layout; bundles live at walnut root, not under `bundles/`)
 8. `.alive/preferences.yaml` — full (if exists)
 
 Do not respond about a walnut without reading its kernel files. Never guess at file contents.
@@ -46,7 +46,7 @@ Do not respond about a walnut without reading its kernel files. Never guess at f
 
 ---
 
-## Fifteen Skills
+## Eighteen Skills
 
 ```
 /alive:world                  see your world
@@ -60,10 +60,13 @@ Do not respond about a walnut without reading its kernel files. Never guess at f
 /alive:settings               customize preferences, voice, rhythm
 /alive:session-history        squirrel activity, session timeline
 /alive:mine-for-context       deep context extraction
-/alive:build-extensions        create skills, rules, hooks for your world
+/alive:build-extensions       create skills, rules, hooks for your world
 /alive:my-context-graph       render the world graph
 /alive:session-context-rebuild  rebuild context from past sessions
 /alive:system-upgrade         migrate from legacy alive to current
+/alive:share                  package a walnut or bundle for sharing (P2P)
+/alive:receive                import a .walnut package from inbox or relay
+/alive:relay                  set up GitHub relay + manage peers
 ```
 
 ---
