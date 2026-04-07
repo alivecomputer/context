@@ -774,21 +774,6 @@ def _copy_file(src, dst):
         shutil.copy2(src, dst)
 
 
-def _stage_snapshot(walnut_path, staging):
-    # type: (str, str) -> None
-    """Stage a snapshot scope: ``_kernel/key.md`` + ``_kernel/insights.md``.
-
-    Layout-agnostic: snapshot scope only ever includes kernel source files,
-    which live in the same place across v2 and v3 walnut layouts.
-    """
-    kernel_src = os.path.join(walnut_path, "_kernel")
-    kernel_dst = os.path.join(staging, "_kernel")
-    for fname in ("key.md", "insights.md"):
-        src = os.path.join(kernel_src, fname)
-        if os.path.isfile(src):
-            _copy_file(src, os.path.join(kernel_dst, fname))
-
-
 def _stage_tree(src_dir, dst_dir):
     # type: (str, str) -> None
     """Recursively copy a directory tree, applying basic safety exclusions.
@@ -812,6 +797,654 @@ def _stage_tree(src_dir, dst_dir):
             full = os.path.join(root, fname)
             dst = os.path.join(dst_dir, os.path.relpath(full, src_dir))
             _copy_file(full, dst)
+
+
+# ---------------------------------------------------------------------------
+# v3 staging layer (LD8, LD9, LD26, LD27)
+# ---------------------------------------------------------------------------
+#
+# The functions below implement the v3-aware staging for the create pipeline.
+# They sit above the layout-agnostic primitives (``_copy_file``, ``_stage_tree``)
+# and below the user-facing CLI (task .5). Staging is a read-only operation on
+# the source walnut: nothing is written under ``walnut_path``.
+#
+# Package layout is ALWAYS flat (LD8): no ``bundles/`` container, no
+# ``_core/_capsules/`` container. v2 and v1 source walnuts are migrated on the
+# fly at create time. The only exception is ``--source-layout v2`` testing mode
+# (task .5 / .7), which bypasses these helpers.
+
+
+# Exact file paths (POSIX) that are ALWAYS excluded from any v3 package.
+# Matches LD26 "Excluded from package" for full scope. Applies to bundle and
+# snapshot scopes as a safety net even though their required file set does not
+# include these paths.
+_PACKAGE_EXCLUDES = {
+    "_kernel/now.json",
+    "_kernel/_generated",
+    "_kernel/history",
+    "_kernel/links.yaml",
+    "_kernel/people.yaml",
+    "_kernel/imports.json",
+    ".alive/_squirrels",
+    "desktop.ini",
+}
+
+# Filename-only exclusions (matched anywhere in the tree).
+_PACKAGE_EXCLUDE_NAMES = {
+    ".DS_Store",
+    "Thumbs.db",
+    "desktop.ini",
+}
+
+# Directories that belong to the kernel, legacy containers, build artefacts, or
+# archives. They are skipped when enumerating live context for full scope.
+# Mirrors LD27's live context definition. ``bundles`` and ``_core`` are on the
+# list because bundles are staged separately via ``walnut_paths.find_bundles``.
+_LIVE_CONTEXT_SKIP_DIRS = {
+    "_kernel",
+    ".alive",
+    ".git",
+    "__pycache__",
+    "node_modules",
+    "raw",
+    "dist",
+    "build",
+    ".next",
+    "target",
+    "_archive",
+    "_references",
+    "01_Archive",
+    "bundles",
+    "_core",
+}
+
+# Standard bundle containers for LD8 top-level detection. Values are
+# POSIX-normalized relpaths.
+STANDARD_CONTAINERS = {"bundles", "_core/_capsules"}
+
+
+# ---------------------------------------------------------------------------
+# LD9 stub constants
+# ---------------------------------------------------------------------------
+#
+# These strings are byte-stable. Tests mock ``now_utc_iso`` and
+# ``resolve_session_id`` so the emitted stub output is deterministic given the
+# walnut name and sender handle.
+
+STUB_LOG_MD = """\
+---
+walnut: {walnut_name}
+stubbed_at: {iso_timestamp}
+stubbed_by: squirrel:{session_id}
+reason: Default share exclusion -- full log not shared; ask sender for access
+entry-count: 0
+---
+
+This is a placeholder. The original log.md was excluded by the sender's default
+share baseline. Contact {sender} directly for access to the full history.
+"""
+
+STUB_INSIGHTS_MD = """\
+---
+walnut: {walnut_name}
+stubbed_at: {iso_timestamp}
+reason: Default share exclusion
+---
+
+## Strategy
+(stubbed)
+
+## Technical
+(stubbed)
+"""
+
+
+# ---------------------------------------------------------------------------
+# Mockable environment helpers (LD9)
+# ---------------------------------------------------------------------------
+
+def now_utc_iso():
+    # type: () -> str
+    """Return the current UTC time as an ISO 8601 string.
+
+    Wrapped in a function so tests can monkeypatch a fixed timestamp without
+    touching ``datetime`` globally. Format matches the stub constants.
+    """
+    return datetime.datetime.now(datetime.timezone.utc).strftime(
+        "%Y-%m-%dT%H:%M:%SZ"
+    )
+
+
+def resolve_session_id():
+    # type: () -> str
+    """Return the current ALIVE session id, or ``"manual"`` for CLI runs."""
+    return os.environ.get("ALIVE_SESSION_ID", "manual")
+
+
+def resolve_sender():
+    # type: () -> str
+    """Return the current sender handle (GitHub login), or ``"unknown"``.
+
+    Reads ``GH_USER`` from the environment. ``gh api user`` fallback lives in
+    the CLI layer (task .5) so this helper stays pure and test-friendly.
+    """
+    return os.environ.get("GH_USER", "unknown")
+
+
+def render_stub_log(walnut_name, sender, session_id):
+    # type: (str, str, str) -> str
+    """Render ``STUB_LOG_MD`` with the current timestamp and identity fields."""
+    return STUB_LOG_MD.format(
+        walnut_name=walnut_name,
+        iso_timestamp=now_utc_iso(),
+        session_id=session_id,
+        sender=sender,
+    )
+
+
+def render_stub_insights(walnut_name):
+    # type: (str) -> str
+    """Render ``STUB_INSIGHTS_MD`` with the current timestamp."""
+    return STUB_INSIGHTS_MD.format(
+        walnut_name=walnut_name,
+        iso_timestamp=now_utc_iso(),
+    )
+
+
+# ---------------------------------------------------------------------------
+# LD8 top-level bundle helper
+# ---------------------------------------------------------------------------
+
+def is_top_level_bundle(bundle_relpath):
+    # type: (str) -> bool
+    """Return True if a POSIX relpath identifies a top-level bundle.
+
+    A bundle is "top-level" if its relpath is either a single path component
+    (v3 flat, e.g. ``shielding-review``) OR lives directly under a standard
+    container (``bundles/foo`` or ``_core/_capsules/foo``). Bundles buried in
+    arbitrary intermediate dirs (e.g. ``archive/old/bundle-a``) are NOT
+    shareable via P2P and return False.
+
+    The function is defensive about input: OS-native backslashes are converted
+    to forward slashes before the check, so a caller that forgot to normalize
+    still gets the right answer.
+    """
+    if not bundle_relpath:
+        return False
+    relpath = bundle_relpath.replace("\\", "/")
+    if "/" not in relpath:
+        return True
+    for container in STANDARD_CONTAINERS:
+        prefix = container + "/"
+        if relpath.startswith(prefix):
+            remainder = relpath[len(prefix):]
+            if "/" not in remainder:
+                return True
+    return False
+
+
+def _should_exclude_package(rel_path):
+    # type: (str) -> bool
+    """Return True if a POSIX relpath matches the system exclude list.
+
+    Only the hardcoded system excludes from ``_PACKAGE_EXCLUDES`` /
+    ``_PACKAGE_EXCLUDE_NAMES`` are applied here. User-supplied ``--exclude``
+    glob patterns and preset exclusions live in LD11's create CLI contract and
+    are applied by the CLI layer (task .5 / .7), after this helper returns
+    False.
+    """
+    if not rel_path:
+        return False
+    rel = rel_path.replace("\\", "/")
+
+    # Exact path prefix matches (covers both files and dir prefixes).
+    for pattern in _PACKAGE_EXCLUDES:
+        if rel == pattern or rel.startswith(pattern + "/"):
+            return True
+
+    # Name-only filter. Applies to any segment of the relpath, not just the
+    # leaf -- ``.DS_Store`` buried inside a bundle should still be excluded.
+    parts = rel.split("/")
+    for segment in parts:
+        if segment in _PACKAGE_EXCLUDE_NAMES:
+            return True
+        if segment.startswith("._"):
+            return True
+    return False
+
+
+# ---------------------------------------------------------------------------
+# Staging helpers -- scope implementations
+# ---------------------------------------------------------------------------
+
+def _write_text(path, content):
+    # type: (str, str) -> None
+    """Write UTF-8 text, creating parent directories as needed."""
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w", encoding="utf-8") as f:
+        f.write(content)
+
+
+def _walnut_name(walnut_path):
+    # type: (str) -> str
+    """Return the walnut's directory basename.
+
+    Used to populate stub templates. Does NOT parse ``_kernel/key.md`` -- that
+    level of detail belongs in the manifest generator (task .5).
+    """
+    return os.path.basename(os.path.abspath(walnut_path.rstrip(os.sep)))
+
+
+def _copy_kernel_optional(walnut_path, staging, fname):
+    # type: (str, str, str) -> bool
+    """Copy ``_kernel/{fname}`` if it exists. Returns True on copy."""
+    src = os.path.join(walnut_path, "_kernel", fname)
+    if os.path.isfile(src):
+        _copy_file(src, os.path.join(staging, "_kernel", fname))
+        return True
+    return False
+
+
+def _copy_kernel_or_default(walnut_path, staging, fname, default_content):
+    # type: (str, str, str, str) -> None
+    """Copy ``_kernel/{fname}`` if present; otherwise write ``default_content``."""
+    src = os.path.join(walnut_path, "_kernel", fname)
+    dst = os.path.join(staging, "_kernel", fname)
+    if os.path.isfile(src):
+        _copy_file(src, dst)
+    else:
+        _write_text(dst, default_content)
+
+
+def _stage_top_level_bundles(walnut_path, staging, warnings):
+    # type: (str, str, List[str]) -> List[Tuple[str, str]]
+    """Stage all top-level bundles flat at the staging root.
+
+    Iterates ``walnut_paths.find_bundles``, filters with ``is_top_level_bundle``,
+    and copies each surviving bundle to ``{staging}/{leaf_name}/``. Nested
+    bundles append a warning. Leaf name collisions (two bundles with the same
+    basename at different standard locations) are flagged but the first wins
+    -- LD27 says ``create --scope full`` REFUSES on leaf collisions, so this
+    helper expects the CLI (task .5) to have already gated that case. The
+    warning exists as defence-in-depth in case something slips past.
+
+    Returns the list of successfully staged ``(relpath, leaf_name)`` pairs.
+    """
+    if walnut_paths is None:  # pragma: no cover -- defensive only
+        raise RuntimeError(
+            "walnut_paths module not available; cannot enumerate bundles"
+        )
+
+    staged = []  # type: List[Tuple[str, str]]
+    seen_leaves = {}  # type: Dict[str, str]
+    nested_relpaths = []  # type: List[str]
+
+    for relpath, abs_path in walnut_paths.find_bundles(walnut_path):
+        if not is_top_level_bundle(relpath):
+            nested_relpaths.append(relpath)
+            continue
+        leaf = relpath.split("/")[-1]
+        if leaf in seen_leaves:
+            warnings.append(
+                "Bundle leaf '{0}' appears at multiple locations ({1}, {2}); "
+                "keeping the first. Run /alive:system-cleanup to resolve.".format(
+                    leaf, seen_leaves[leaf], relpath
+                )
+            )
+            continue
+        seen_leaves[leaf] = relpath
+        dst_dir = os.path.join(staging, leaf)
+        _stage_tree(abs_path, dst_dir)
+        staged.append((relpath, leaf))
+
+    if nested_relpaths:
+        warnings.append(
+            "Excluded nested (non-top-level) bundles from package: {0}".format(
+                ", ".join(sorted(nested_relpaths))
+            )
+        )
+    return staged
+
+
+def _stage_live_context(walnut_path, staging):
+    # type: (str, str) -> None
+    """Copy live context files into ``staging`` at the walnut root.
+
+    Live context is every file or directory at the walnut root that is NOT:
+      - part of ``_kernel/`` / ``.alive/`` / ``.git``
+      - a legacy bundle container (``bundles/`` or ``_core/``)
+      - an archive / build dir (see ``_LIVE_CONTEXT_SKIP_DIRS``)
+      - a bundle directory (has ``context.manifest.yaml`` at its root)
+      - a dotfile / dotdir
+      - on the system exclude list (``_should_exclude_package``)
+
+    Bundles inside ``bundles/``, ``_core/``, or nested under other directories
+    are staged by ``_stage_top_level_bundles`` -- this helper deliberately
+    skips them.
+    """
+    if not os.path.isdir(walnut_path):
+        return
+    for item in sorted(os.listdir(walnut_path)):
+        if item in _LIVE_CONTEXT_SKIP_DIRS:
+            continue
+        if item.startswith("."):
+            continue
+        if item in _PACKAGE_EXCLUDE_NAMES:
+            continue
+        if _should_exclude_package(item):
+            continue
+        src = os.path.join(walnut_path, item)
+        if os.path.isdir(src):
+            # A directory with ``context.manifest.yaml`` at its root is a v3
+            # flat bundle; it is already staged by the bundle pass.
+            if os.path.isfile(os.path.join(src, "context.manifest.yaml")):
+                continue
+            _stage_tree(src, os.path.join(staging, item))
+        elif os.path.isfile(src):
+            _copy_file(src, os.path.join(staging, item))
+
+
+def _stage_full(
+    walnut_path,
+    staging,
+    sender=None,
+    session_id=None,
+    stub_kernel_history=True,
+    warnings=None,
+):
+    # type: (str, str, Optional[str], Optional[str], bool, Optional[List[str]]) -> List[str]
+    """Stage a full-scope package per LD26.
+
+    Copies the required ``_kernel/*`` files, stages all top-level bundles flat,
+    and copies live context. Returns the accumulated warnings list (also
+    mutated in place if the caller passed one).
+
+    Parameters:
+        walnut_path: absolute path to the source walnut
+        staging: absolute path to an empty staging directory
+        sender: GitHub handle used in stub log.md rendering; falls back to
+            ``resolve_sender()``
+        session_id: ALIVE session id used in stub log.md rendering; falls back
+            to ``resolve_session_id()``
+        stub_kernel_history: when True (the LD9 default), log.md and
+            insights.md are replaced with stub content regardless of source
+            state. When False (``--include-full-history``), the real files are
+            copied if present.
+        warnings: optional pre-existing list to append warnings onto
+    """
+    if warnings is None:
+        warnings = []
+    if sender is None:
+        sender = resolve_sender()
+    if session_id is None:
+        session_id = resolve_session_id()
+
+    walnut_name = _walnut_name(walnut_path)
+
+    # ---- required _kernel files -------------------------------------------------
+    # key.md -- always ship, always real
+    key_src = os.path.join(walnut_path, "_kernel", "key.md")
+    if not os.path.isfile(key_src):
+        raise FileNotFoundError(
+            "walnut missing _kernel/key.md: {0}".format(walnut_path)
+        )
+    _copy_file(key_src, os.path.join(staging, "_kernel", "key.md"))
+
+    # log.md -- stubbed unless --include-full-history
+    if stub_kernel_history:
+        _write_text(
+            os.path.join(staging, "_kernel", "log.md"),
+            render_stub_log(walnut_name, sender, session_id),
+        )
+    else:
+        log_src = os.path.join(walnut_path, "_kernel", "log.md")
+        if os.path.isfile(log_src):
+            _copy_file(log_src, os.path.join(staging, "_kernel", "log.md"))
+        else:
+            # Still required -- fall back to stub even in include-full mode.
+            _write_text(
+                os.path.join(staging, "_kernel", "log.md"),
+                render_stub_log(walnut_name, sender, session_id),
+            )
+            warnings.append(
+                "Source walnut has no _kernel/log.md; shipping stub instead."
+            )
+
+    # insights.md -- same rules as log.md
+    if stub_kernel_history:
+        _write_text(
+            os.path.join(staging, "_kernel", "insights.md"),
+            render_stub_insights(walnut_name),
+        )
+    else:
+        ins_src = os.path.join(walnut_path, "_kernel", "insights.md")
+        if os.path.isfile(ins_src):
+            _copy_file(ins_src, os.path.join(staging, "_kernel", "insights.md"))
+        else:
+            _write_text(
+                os.path.join(staging, "_kernel", "insights.md"),
+                render_stub_insights(walnut_name),
+            )
+            warnings.append(
+                "Source walnut has no _kernel/insights.md; shipping stub instead."
+            )
+
+    # tasks.json -- copy or synthesize empty skeleton
+    _copy_kernel_or_default(
+        walnut_path, staging, "tasks.json", '{"tasks": []}\n'
+    )
+    # completed.json -- same
+    _copy_kernel_or_default(
+        walnut_path, staging, "completed.json", '{"completed": []}\n'
+    )
+
+    # config.yaml -- optional, copy only if present
+    _copy_kernel_optional(walnut_path, staging, "config.yaml")
+
+    # ---- bundles (flat at staging root) -----------------------------------------
+    _stage_top_level_bundles(walnut_path, staging, warnings)
+
+    # ---- live context -----------------------------------------------------------
+    _stage_live_context(walnut_path, staging)
+
+    return warnings
+
+
+def _stage_bundle(walnut_path, staging, bundle_names, warnings=None):
+    # type: (str, str, List[str], Optional[List[str]]) -> List[str]
+    """Stage a bundle-scope package per LD26.
+
+    Ships ``_kernel/key.md`` (for identity verification on receive per LD18)
+    plus every bundle requested via ``bundle_names`` (LEAF names only).
+    Resolution policy matches LD8 enforcement: v3 flat and standard containers
+    are accepted; nested-only locations are rejected with an actionable error.
+
+    Raises:
+        FileNotFoundError if any requested bundle cannot be resolved.
+        ValueError if a requested bundle exists only at non-top-level locations
+            or at multiple standard locations (mixed-layout collision).
+    """
+    if warnings is None:
+        warnings = []
+    if walnut_paths is None:  # pragma: no cover -- defensive only
+        raise RuntimeError(
+            "walnut_paths module not available; cannot enumerate bundles"
+        )
+    if not bundle_names:
+        raise ValueError("_stage_bundle requires at least one bundle name")
+
+    # key.md is required for LD18 identity check
+    key_src = os.path.join(walnut_path, "_kernel", "key.md")
+    if not os.path.isfile(key_src):
+        raise FileNotFoundError(
+            "walnut missing _kernel/key.md: {0}".format(walnut_path)
+        )
+    _copy_file(key_src, os.path.join(staging, "_kernel", "key.md"))
+
+    # Build a one-shot leaf-name index from find_bundles so we can surface
+    # nested matches when resolve_bundle_path returns None.
+    all_bundles = walnut_paths.find_bundles(walnut_path)
+    leaf_index = {}  # type: Dict[str, List[Tuple[str, str]]]
+    for relpath, abs_path in all_bundles:
+        leaf = relpath.split("/")[-1]
+        leaf_index.setdefault(leaf, []).append((relpath, abs_path))
+
+    seen_leaves = set()  # type: set
+    for name in bundle_names:
+        if "/" in name or "\\" in name:
+            raise ValueError(
+                "Bundle names must be leaf names (no path separators): "
+                "'{0}'".format(name)
+            )
+        if name in seen_leaves:
+            raise ValueError(
+                "Duplicate bundle name in request: '{0}'".format(name)
+            )
+        seen_leaves.add(name)
+
+        # Collision detection: both v3 flat AND a standard container hold a
+        # bundle with this leaf name. Mirror LD27 policy and refuse.
+        matches = leaf_index.get(name, [])
+        top_level_matches = [
+            (rp, ap) for rp, ap in matches if is_top_level_bundle(rp)
+        ]
+        if len(top_level_matches) > 1:
+            relpaths = sorted(rp for rp, _ in top_level_matches)
+            raise ValueError(
+                "Bundle name collision: '{0}' exists at {1}. "
+                "Resolve via /alive:system-cleanup before sharing.".format(
+                    name, relpaths
+                )
+            )
+
+        if top_level_matches:
+            # Prefer resolve_bundle_path's ordering for the single-match case
+            # (v3 wins over v2 wins over v1) to match LD8 create enforcement.
+            resolved = walnut_paths.resolve_bundle_path(walnut_path, name)
+            if resolved and any(
+                os.path.abspath(ap) == resolved
+                for _, ap in top_level_matches
+            ):
+                bundle_abs = resolved
+            else:
+                bundle_abs = top_level_matches[0][1]
+        else:
+            # Not found at standard locations. If it exists nested, reject
+            # with an actionable message listing where. Otherwise report not
+            # found.
+            if matches:
+                nested = sorted(rp for rp, _ in matches)
+                raise ValueError(
+                    "Bundle '{0}' exists at non-standard location(s): {1}. "
+                    "Only top-level bundles (v3 flat or v2/v1 container) are "
+                    "shareable via P2P. Move the bundle to the walnut root "
+                    "or an archive before sharing.".format(name, nested)
+                )
+            raise FileNotFoundError(
+                "Bundle '{0}' not found in walnut.".format(name)
+            )
+
+        dst = os.path.join(staging, name)
+        _stage_tree(bundle_abs, dst)
+
+    return warnings
+
+
+def _stage_snapshot(walnut_path, staging, warnings=None):
+    # type: (str, str, Optional[List[str]]) -> List[str]
+    """Stage a snapshot-scope package per LD26.
+
+    Contents are EXACTLY ``_kernel/key.md`` (real) and ``_kernel/insights.md``
+    (stubbed per LD9). Snapshot scope intentionally has no history, no tasks,
+    no bundles, no live context.
+    """
+    if warnings is None:
+        warnings = []
+    key_src = os.path.join(walnut_path, "_kernel", "key.md")
+    if not os.path.isfile(key_src):
+        raise FileNotFoundError(
+            "walnut missing _kernel/key.md: {0}".format(walnut_path)
+        )
+    _copy_file(key_src, os.path.join(staging, "_kernel", "key.md"))
+
+    walnut_name = _walnut_name(walnut_path)
+    _write_text(
+        os.path.join(staging, "_kernel", "insights.md"),
+        render_stub_insights(walnut_name),
+    )
+    return warnings
+
+
+def _stage_files(
+    walnut_path,
+    scope,
+    bundle_names=None,
+    sender=None,
+    session_id=None,
+    stub_kernel_history=True,
+    staging_dir=None,
+    warnings=None,
+):
+    # type: (str, str, Optional[List[str]], Optional[str], Optional[str], bool, Optional[str], Optional[List[str]]) -> str
+    """Dispatch to the per-scope staging routine and return the staging dir.
+
+    Creates a temp staging directory (unless ``staging_dir`` is provided) and
+    calls the matching ``_stage_*`` function. Leaves the staging dir in place
+    on success; callers are responsible for packaging it and cleaning up. On
+    failure the staging dir is removed to avoid leaving orphan temp files.
+
+    Parameters:
+        walnut_path: absolute path to the source walnut
+        scope: ``"full"``, ``"bundle"``, or ``"snapshot"``
+        bundle_names: required when scope == "bundle"; ignored otherwise
+        sender / session_id: forwarded to ``_stage_full`` for stub rendering
+        stub_kernel_history: forwarded to ``_stage_full``
+        staging_dir: if provided, stage into this existing empty directory
+            instead of creating a temp dir
+        warnings: optional list for accumulating warnings
+    """
+    if scope not in ("full", "bundle", "snapshot"):
+        raise ValueError(
+            "Unknown staging scope '{0}'; expected full|bundle|snapshot".format(
+                scope
+            )
+        )
+
+    walnut_path = os.path.abspath(walnut_path)
+    if not os.path.isdir(walnut_path):
+        raise FileNotFoundError("walnut path not found: {0}".format(walnut_path))
+
+    if staging_dir is None:
+        staging_dir = tempfile.mkdtemp(prefix="walnut-stage-")
+    else:
+        os.makedirs(staging_dir, exist_ok=True)
+
+    if warnings is None:
+        warnings = []
+
+    try:
+        if scope == "full":
+            _stage_full(
+                walnut_path,
+                staging_dir,
+                sender=sender,
+                session_id=session_id,
+                stub_kernel_history=stub_kernel_history,
+                warnings=warnings,
+            )
+        elif scope == "bundle":
+            if not bundle_names:
+                raise ValueError(
+                    "_stage_files with scope=bundle requires bundle_names"
+                )
+            _stage_bundle(walnut_path, staging_dir, bundle_names, warnings)
+        else:  # snapshot
+            _stage_snapshot(walnut_path, staging_dir, warnings)
+    except Exception:
+        shutil.rmtree(staging_dir, ignore_errors=True)
+        raise
+
+    return staging_dir
 
 
 # ---------------------------------------------------------------------------
