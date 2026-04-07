@@ -23,7 +23,7 @@ Then, if deeper context is needed:
 5. `.alive/_squirrels/` — scan for unsaved entries
 6. `.alive/preferences.yaml` — full (if exists)
 
-Bundle data and task queues are now populated into `_kernel/now.json` by `tasks.py` / `project.py`. You do not need to read `bundles/*/tasks.md` or `bundles/*/context.manifest.yaml` separately — their state is already in `now.json`.
+Bundle data and task queues are now populated into `_kernel/now.json` by `tasks.py` / `project.py`. You do not need to read per-bundle `tasks.json` or `context.manifest.yaml` files separately — their state is already in `now.json`. In v3, bundles live flat at the walnut root (no `bundles/` container) and tasks are stored as `tasks.json` (no `tasks.md`).
 
 > **Backward compat:** Some walnuts may still have `_kernel/_generated/now.json` (v2 path). If `_kernel/now.json` is missing, fall back to `_kernel/_generated/now.json`.
 
