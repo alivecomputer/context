@@ -1694,6 +1694,15 @@ def generate_manifest(
     ``signature`` field is intentionally absent; the sign pipeline appends it
     after canonicalization.
 
+    NOTE: the legacy v2 helper ``_update_manifest_encrypted`` (used by the
+    pre-v3 ``encrypt_package`` / ``decrypt_package`` paths) regex-edits an
+    ``encrypted: bool`` field, not the LD20 ``encryption: none|passphrase|rsa``
+    string field. That helper is part of the v2 encryption pipeline that task
+    .7 will rewrite to operate on v3 manifests. Until then, calling
+    ``encrypt_package`` on a v3 manifest produced by this function will leave
+    ``encryption: "none"`` unchanged in the YAML -- a known cross-task gap
+    documented here so receivers do not get a stale or contradictory hint.
+
     Parameters:
         staging_dir: absolute path to the staging directory (already populated
             by ``_stage_files``)
