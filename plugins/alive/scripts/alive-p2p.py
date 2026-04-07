@@ -36,7 +36,7 @@ import subprocess
 import sys
 import tarfile
 import tempfile
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Set, Tuple
 
 # v3 walnut path helpers (vendored per LD10 to avoid importing underscored
 # privates from tasks.py / project.py). The import is wrapped so the file can
@@ -4068,13 +4068,1439 @@ def create_package(
 
 
 # ---------------------------------------------------------------------------
+# LD1 receive pipeline (task .8)
+# ---------------------------------------------------------------------------
+#
+# ``receive_package`` orchestrates the 13-step LD1 pipeline:
+#
+#   1. extract            -- detect envelope, decrypt, safe_extractall to staging
+#   2. validate           -- schema, per-file checksums, payload sha256, signature
+#   3. dedupe-check       -- LD2 subset-of-union against target/_kernel/imports.json
+#   4. infer-layout       -- LD7 precedence: --source-layout > manifest > inference
+#   5. scope-check        -- LD18 target preconditions per scope
+#   6. migrate            -- LD8 v2 -> v3 staging reshape if needed
+#   7. preview            -- print summary; await --yes for non-interactive use
+#   8. acquire-lock       -- LD4/LD28 fcntl or mkdir fallback
+#   9. transact-swap      -- LD18 atomic move (full/snapshot) or journaled move (bundle)
+#  10. log-edit           -- LD12 insert import entry after frontmatter (atomic)
+#  11. ledger-write       -- LD2 append entry to _kernel/imports.json
+#  12. regenerate-now     -- LD1 explicit subprocess to project.py (NOT hook chain)
+#  13. cleanup-and-release -- always runs; release lock, delete or preserve staging
+#
+# RSA hybrid decryption deferred to task .11 -- raises NotImplementedError.
+
+# Detection magic bytes per LD21.
+_MAGIC_GZIP = b"\x1f\x8b"
+_MAGIC_OPENSSL_SALTED = b"Salted__"
+
+# Default scope-aware exclusion list applied DURING staging extract -- defense
+# in depth: even if a malicious sender ships .alive/ or .walnut/ inside a
+# package, we strip them before any swap. The pre-validation in safe_tar_extract
+# already prevents path traversal; this strips legitimately-named-but-dangerous
+# system dirs.
+_RECEIVE_STRIP_DIRS = (".alive", ".walnut", "__MACOSX")
+
+
+def _detect_envelope(package_path):
+    # type: (str) -> str
+    """Sniff the first bytes of a .walnut package and return its envelope kind.
+
+    Returns one of:
+        "gzip"        -- unencrypted gzipped tarball (LD21 path 1)
+        "passphrase"  -- OpenSSL ``Salted__`` envelope (LD21 path 2)
+        "rsa"         -- RSA hybrid envelope (LD21 path 3, deferred to .11)
+
+    Detection algorithm:
+        1. First two bytes ``1F 8B`` -> gzip
+        2. First eight bytes ``"Salted__"`` -> passphrase
+        3. Otherwise: try opening as a tar archive and look for the
+           ``payload.key`` member (legacy v2 RSA hybrid produced by
+           ``encrypt_package`` with ``mode="rsa"``) or the
+           ``rsa-envelope-v1.json`` member (LD21 spec, lands in .11)
+        4. If neither match, raise ``ValueError`` with an actionable message.
+    """
+    package_path = os.path.abspath(package_path)
+    if not os.path.isfile(package_path):
+        raise FileNotFoundError("Package not found: {0}".format(package_path))
+
+    with open(package_path, "rb") as f:
+        head = f.read(8)
+
+    if head[:2] == _MAGIC_GZIP:
+        return "gzip"
+    if head == _MAGIC_OPENSSL_SALTED:
+        return "passphrase"
+
+    # Try treating it as an unencrypted tar (might be the legacy v2 RSA outer
+    # tar produced by ``encrypt_package``, which is an uncompressed tar with
+    # ``payload.key`` + ``payload.enc`` + ``manifest.yaml``).
+    try:
+        with tarfile.open(package_path, "r:*") as tar:
+            names = set(tar.getnames())
+    except (tarfile.TarError, OSError):
+        raise ValueError(
+            "Unknown package format: {0}. Expected gzip, passphrase, or "
+            "RSA hybrid envelope.".format(package_path)
+        )
+
+    # LD21 RSA hybrid (canonical, lands in .11): rsa-envelope-v1.json + payload.enc
+    if "rsa-envelope-v1.json" in names and "payload.enc" in names:
+        return "rsa"
+    # Legacy v2 RSA hybrid produced by encrypt_package: payload.key + payload.enc
+    if "payload.key" in names and "payload.enc" in names:
+        return "rsa"
+
+    raise ValueError(
+        "Unknown package format: {0}. Expected gzip, passphrase, or RSA "
+        "hybrid envelope.".format(package_path)
+    )
+
+
+def _decrypt_to_staging(package_path, envelope, passphrase_env, private_key_path,
+                        staging_parent):
+    # type: (str, str, Optional[str], Optional[str], str) -> str
+    """Decrypt a package envelope (if needed) and return the path to a
+    plaintext gzipped tar that can be safely extracted via ``safe_extractall``.
+
+    Returns either the original ``package_path`` (gzip) or a path inside a
+    sibling temp dir under ``staging_parent`` containing the decrypted inner
+    payload tarball.
+
+    Caller is responsible for cleaning up any temp files this returns.
+
+    Raises:
+        NotImplementedError -- RSA hybrid (deferred to task .11)
+        ValueError          -- malformed envelope
+        RuntimeError        -- decryption failure (wrong passphrase, etc.)
+    """
+    if envelope == "gzip":
+        return package_path
+
+    if envelope == "passphrase":
+        if not passphrase_env:
+            raise ValueError(
+                "Package is passphrase-encrypted. Re-run with "
+                "--passphrase-env <ENV_VAR> pointing at an env var that "
+                "holds the passphrase."
+            )
+        passphrase = os.environ.get(passphrase_env, "")
+        if not passphrase:
+            raise ValueError(
+                "Environment variable {0!r} is empty or unset; cannot "
+                "decrypt package.".format(passphrase_env)
+            )
+
+        ssl = _get_openssl()
+        # Decrypt to a sibling temp file. We don't reuse decrypt_package because
+        # that helper assumes the v2 outer-tar layout (manifest.yaml +
+        # payload.enc + optional payload.key). LD21 passphrase mode is the raw
+        # OpenSSL output: we feed the .walnut file directly into ``openssl enc -d``.
+        decrypted_dir = tempfile.mkdtemp(
+            prefix=".alive-receive-dec-", dir=staging_parent,
+        )
+        decrypted_path = os.path.join(decrypted_dir, "payload.tar.gz")
+
+        fallbacks = [
+            ("v2.1.0 default (pbkdf2, iter=600000)",
+             ["-md", "sha256", "-pbkdf2", "-iter", "600000"]),
+            ("epic-LD5 baseline (pbkdf2, iter=100000)",
+             ["-md", "sha256", "-pbkdf2", "-iter", "100000"]),
+            ("v2 defaults (pbkdf2, no iter)",
+             ["-md", "sha256", "-pbkdf2"]),
+            ("v1 legacy (md5)",
+             ["-md", "md5"]),
+        ]
+        last_err = ""
+        for desc, extra in fallbacks:
+            proc = subprocess.run(
+                [ssl["binary"], "enc", "-d", "-aes-256-cbc",
+                 *extra,
+                 "-in", package_path, "-out", decrypted_path,
+                 "-pass", "env:{0}".format(passphrase_env)],
+                capture_output=True, text=True, timeout=120,
+                env={**os.environ, passphrase_env: passphrase},
+            )
+            if proc.returncode == 0:
+                # Sanity check: must look like a gzip file now.
+                with open(decrypted_path, "rb") as f:
+                    if f.read(2) == _MAGIC_GZIP:
+                        return decrypted_path
+                last_err = "{0}: openssl exit 0 but output is not gzip".format(desc)
+                continue
+            last_err = "{0}: {1}".format(desc, proc.stderr.strip())
+
+        # All fallbacks failed -- clean up and raise.
+        shutil.rmtree(decrypted_dir, ignore_errors=True)
+        raise RuntimeError(
+            "Cannot decrypt package -- wrong passphrase or unsupported "
+            "format. Try `openssl enc -d` manually to debug. Last error: {0}".format(
+                last_err
+            )
+        )
+
+    if envelope == "rsa":
+        raise NotImplementedError(
+            "RSA hybrid decryption lands in task fn-7-7cw.11. Use a "
+            "passphrase or unencrypted package for now."
+        )
+
+    raise ValueError("Unknown envelope kind: {0!r}".format(envelope))
+
+
+def _strip_unwanted_dirs_from_staging(staging_dir):
+    # type: (str) -> List[str]
+    """Defense-in-depth: remove any ``.alive``/``.walnut`` dirs that may have
+    snuck into a package. The pre-validation in ``safe_tar_extract`` already
+    rejects path traversal, so this only strips legitimately-named directories
+    that would be dangerous on the receiver side.
+
+    Returns a list of removed relative paths (for diagnostics).
+    """
+    removed = []  # type: List[str]
+    for entry in os.listdir(staging_dir):
+        if entry in _RECEIVE_STRIP_DIRS:
+            full = os.path.join(staging_dir, entry)
+            if os.path.isdir(full):
+                shutil.rmtree(full, ignore_errors=True)
+                removed.append(entry)
+            elif os.path.isfile(full):
+                try:
+                    os.unlink(full)
+                except OSError:
+                    pass
+                removed.append(entry)
+    return removed
+
+
+def _infer_source_layout(staging_dir, manifest_layout, cli_override):
+    # type: (str, Optional[str], Optional[str]) -> str
+    """LD7 layout inference. Returns ``"v2"`` or ``"v3"`` (or ``"agnostic"``
+    for snapshot-shaped staging trees).
+
+    Precedence:
+        1. ``cli_override`` if set AND ALIVE_P2P_TESTING=1
+        2. ``manifest_layout`` if in {v2, v3}
+        3. Structural inspection of immediate children only
+        4. Fail with ``ValueError``
+
+    Structural rules (immediate children only, never recursive):
+        a) staging/bundles/ exists AND any staging/bundles/*/context.manifest.yaml
+           -> v2
+        b) staging/_kernel/_generated/ exists -> v2
+        c) any immediate child <name>/ (not _kernel, not bundles) with
+           context.manifest.yaml at its root -> v3
+        d) staging contains ONLY _kernel/ as immediate child -> agnostic
+        e) otherwise: fail
+    """
+    if cli_override and os.environ.get("ALIVE_P2P_TESTING") == "1":
+        if cli_override in ("v2", "v3"):
+            return cli_override
+    if manifest_layout in ("v2", "v3"):
+        return manifest_layout
+
+    children = sorted(os.listdir(staging_dir))
+
+    # Rule (a): v2 bundles container
+    bundles_dir = os.path.join(staging_dir, "bundles")
+    if os.path.isdir(bundles_dir):
+        for sub in os.listdir(bundles_dir):
+            sub_path = os.path.join(bundles_dir, sub)
+            if os.path.isdir(sub_path) and os.path.isfile(
+                os.path.join(sub_path, "context.manifest.yaml")
+            ):
+                return "v2"
+
+    # Rule (b): v2 _generated marker
+    generated_dir = os.path.join(staging_dir, "_kernel", "_generated")
+    if os.path.isdir(generated_dir):
+        return "v2"
+
+    # Rule (c): v3 flat top-level bundle
+    for entry in children:
+        if entry in ("_kernel", "bundles", "manifest.yaml"):
+            continue
+        entry_path = os.path.join(staging_dir, entry)
+        if os.path.isdir(entry_path) and os.path.isfile(
+            os.path.join(entry_path, "context.manifest.yaml")
+        ):
+            return "v3"
+
+    # Rule (d): snapshot agnostic (only _kernel + manifest.yaml)
+    non_manifest = [c for c in children if c != "manifest.yaml"]
+    if non_manifest == ["_kernel"]:
+        return "agnostic"
+
+    raise ValueError(
+        "Cannot infer source layout. Add a source_layout field to the "
+        "package manifest or verify the package is not corrupt. "
+        "Staging children: {0}".format(children)
+    )
+
+
+def _staging_top_level_bundles(staging_dir):
+    # type: (str) -> List[str]
+    """Return sorted list of top-level bundle leaf names in a v3-shaped staging
+    directory. A bundle is a child dir containing ``context.manifest.yaml`` at
+    its root and not equal to ``_kernel``/``bundles``.
+    """
+    bundles = []  # type: List[str]
+    if not os.path.isdir(staging_dir):
+        return bundles
+    for entry in os.listdir(staging_dir):
+        if entry in ("_kernel", "manifest.yaml"):
+            continue
+        entry_path = os.path.join(staging_dir, entry)
+        if os.path.isdir(entry_path) and os.path.isfile(
+            os.path.join(entry_path, "context.manifest.yaml")
+        ):
+            bundles.append(entry)
+    return sorted(bundles)
+
+
+def _read_imports_ledger(target_path):
+    # type: (str) -> Dict[str, Any]
+    """Load ``{target}/_kernel/imports.json`` if it exists; return canonical
+    empty ledger if not. Tolerates missing target dir gracefully.
+    """
+    ledger_path = os.path.join(target_path, "_kernel", "imports.json")
+    if not os.path.isfile(ledger_path):
+        return {"imports": []}
+    try:
+        with open(ledger_path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        if not isinstance(data, dict) or "imports" not in data:
+            return {"imports": []}
+        if not isinstance(data["imports"], list):
+            return {"imports": []}
+        return data
+    except (IOError, OSError, ValueError, json.JSONDecodeError):
+        return {"imports": []}
+
+
+def _write_imports_ledger(target_path, ledger):
+    # type: (str, Dict[str, Any]) -> None
+    """Atomically write the imports ledger to ``{target}/_kernel/imports.json``.
+
+    Uses ``tempfile.NamedTemporaryFile`` in the same dir + ``os.replace`` so
+    crash mid-write leaves the prior file intact.
+    """
+    kernel_dir = os.path.join(target_path, "_kernel")
+    os.makedirs(kernel_dir, exist_ok=True)
+    ledger_path = os.path.join(kernel_dir, "imports.json")
+    fd, tmp_path = tempfile.mkstemp(
+        prefix=".imports-", suffix=".json", dir=kernel_dir,
+    )
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            json.dump(ledger, f, indent=2, ensure_ascii=False)
+            f.write("\n")
+        os.replace(tmp_path, ledger_path)
+    except Exception:
+        if os.path.exists(tmp_path):
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
+        raise
+
+
+def _compute_dedupe(ledger, import_id, requested_bundles):
+    # type: (Dict[str, Any], str, Optional[List[str]]) -> Tuple[bool, List[str], List[str]]
+    """LD2 subset-of-union dedupe.
+
+    Args:
+        ledger: parsed imports.json dict
+        import_id: this package's import_id
+        requested_bundles: list of bundle leaves to apply (None for full/snapshot)
+
+    Returns ``(is_noop, prior_applied, effective_to_apply)``:
+        is_noop          -- True if every requested bundle is already in the union
+        prior_applied    -- sorted list of bundles already applied across all
+                            ledger entries with matching import_id
+        effective_to_apply -- bundles still needing to be applied (sorted)
+    """
+    prior = set()  # type: Set[str]
+    for entry in ledger.get("imports", []):
+        if not isinstance(entry, dict):
+            continue
+        if entry.get("import_id") != import_id:
+            continue
+        applied = entry.get("applied_bundles", []) or []
+        for b in applied:
+            if isinstance(b, str):
+                prior.add(b)
+
+    if requested_bundles is None:
+        requested = set()  # type: Set[str]
+    else:
+        requested = set(requested_bundles)
+
+    if requested and requested.issubset(prior):
+        return (True, sorted(prior), [])
+    if not requested and prior:
+        # Snapshot/full with empty requested list and SOMETHING already
+        # applied: dedupe says no-op only if there is also no work to do.
+        # We treat this as not-no-op so the caller's regular logic runs --
+        # the caller decides whether requested set is meaningful.
+        return (False, sorted(prior), [])
+
+    effective = sorted(requested - prior)
+    return (False, sorted(prior), effective)
+
+
+def _atomic_write_text(path, content):
+    # type: (str, str) -> None
+    """Write text to ``path`` atomically via tempfile + os.replace."""
+    parent = os.path.dirname(os.path.abspath(path))
+    os.makedirs(parent, exist_ok=True)
+    fd, tmp_path = tempfile.mkstemp(
+        prefix=".tmp-write-", dir=parent,
+    )
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(content)
+        os.replace(tmp_path, path)
+    except Exception:
+        if os.path.exists(tmp_path):
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
+        raise
+
+
+_LOG_FRONTMATTER_RE = re.compile(r"^---\s*\n(.*?)\n---\s*\n?", re.DOTALL)
+
+
+def _parse_log_frontmatter(content):
+    # type: (str) -> Tuple[Dict[str, Any], str, str]
+    """Parse the YAML frontmatter at the head of a log.md file.
+
+    Returns ``(fields, frontmatter_block, body)``:
+        fields            -- dict of top-level scalar fields parsed from the FM
+        frontmatter_block -- the literal frontmatter text including ``---`` lines
+                             and trailing newline (so callers can replace it)
+        body              -- everything after the closing ``---`` line
+
+    If the file does not start with a YAML frontmatter block, all three return
+    values are empty / None to signal that the caller should treat the file
+    as malformed.
+    """
+    if not content.startswith("---"):
+        return ({}, "", content)
+    m = _LOG_FRONTMATTER_RE.match(content)
+    if not m:
+        return ({}, "", content)
+    fm_body = m.group(1)
+    fields = {}  # type: Dict[str, Any]
+    for line in fm_body.split("\n"):
+        line = line.rstrip()
+        if not line or line.startswith("#"):
+            continue
+        if ":" not in line:
+            continue
+        key, _, val = line.partition(":")
+        key = key.strip()
+        val = val.strip()
+        # Strip simple quotes
+        if (val.startswith('"') and val.endswith('"')) or (
+            val.startswith("'") and val.endswith("'")
+        ):
+            val = val[1:-1]
+        fields[key] = val
+    block = m.group(0)
+    body = content[m.end():]
+    return (fields, block, body)
+
+
+def _render_log_frontmatter(fields, key_order):
+    # type: (Dict[str, Any], List[str]) -> str
+    """Render a log.md frontmatter block from a fields dict.
+
+    Emits keys in ``key_order`` first, then any remaining keys alphabetically.
+    Always wraps in ``---`` lines and ends with a single newline. Strings are
+    NOT quoted (matches the v3 log.md convention from rules/standards.md).
+    """
+    out = ["---"]
+    seen = set()  # type: Set[str]
+    for k in key_order:
+        if k in fields:
+            out.append("{0}: {1}".format(k, fields[k]))
+            seen.add(k)
+    for k in sorted(fields.keys()):
+        if k in seen:
+            continue
+        out.append("{0}: {1}".format(k, fields[k]))
+    out.append("---")
+    out.append("")
+    return "\n".join(out)
+
+
+_LOG_FM_KEY_ORDER = ["walnut", "created", "last-entry", "entry-count", "summary"]
+
+
+def _build_import_log_entry(iso_timestamp, session_id, sender, scope,
+                             bundles, source_layout, import_id):
+    # type: (str, str, str, str, Optional[List[str]], str, str) -> str
+    """Render the LD12 import log entry body (no frontmatter).
+
+    The template ends with a trailing blank line so the next entry slots in
+    cleanly above existing content.
+    """
+    if bundles:
+        bundle_list = ", ".join(bundles)
+    else:
+        bundle_list = "n/a"
+    return (
+        "## {ts} - squirrel:{sid}\n"
+        "\n"
+        "Imported package from {sender} via P2P.\n"
+        "- Scope: {scope}\n"
+        "- Bundles: {blist}\n"
+        "- source_layout: {layout}\n"
+        "- import_id: {iid}\n"
+        "\n"
+        "signed: squirrel:{sid}\n"
+        "\n"
+    ).format(
+        ts=iso_timestamp,
+        sid=session_id,
+        sender=sender,
+        scope=scope,
+        blist=bundle_list,
+        layout=source_layout,
+        iid=import_id[:16],
+    )
+
+
+def _edit_log_md(target_path, iso_timestamp, session_id, sender, scope,
+                 bundles, source_layout, import_id, walnut_name, allow_create):
+    # type: (str, str, str, str, str, Optional[List[str]], str, str, str, bool) -> None
+    """LD12 log edit operation. Inserts an import entry after the YAML
+    frontmatter, before any existing entries.
+
+    Args:
+        target_path: absolute path to target walnut
+        allow_create: True for full/snapshot scope (creates log.md if missing).
+                      False for bundle scope (raises if log.md missing).
+
+    Raises:
+        FileNotFoundError -- log.md missing and not allow_create
+        ValueError        -- log.md exists but has no valid frontmatter
+    """
+    log_path = os.path.join(target_path, "_kernel", "log.md")
+    entry_body = _build_import_log_entry(
+        iso_timestamp, session_id, sender, scope, bundles, source_layout, import_id,
+    )
+
+    if not os.path.isfile(log_path):
+        if not allow_create:
+            raise FileNotFoundError(
+                "Target walnut missing _kernel/log.md. Walnut is malformed "
+                "or incomplete. Refusing to edit."
+            )
+        # Create canonical frontmatter + entry.
+        today = iso_timestamp.split("T")[0]
+        fm_fields = {
+            "walnut": walnut_name,
+            "created": today,
+            "last-entry": iso_timestamp,
+            "entry-count": "1",
+            "summary": "Walnut imported via P2P.",
+        }
+        fm = _render_log_frontmatter(fm_fields, _LOG_FM_KEY_ORDER)
+        content = fm + "\n" + entry_body
+        _atomic_write_text(log_path, content)
+        return
+
+    with open(log_path, "r", encoding="utf-8") as f:
+        existing = f.read()
+
+    fields, fm_block, body = _parse_log_frontmatter(existing)
+    if not fm_block:
+        raise ValueError(
+            "Target log.md has no YAML frontmatter. Walnut is malformed. "
+            "Fix manually before retrying receive."
+        )
+
+    # Update last-entry + entry-count
+    try:
+        prev_count = int(fields.get("entry-count", "0"))
+    except (TypeError, ValueError):
+        prev_count = 0
+    fields["entry-count"] = str(prev_count + 1)
+    fields["last-entry"] = iso_timestamp
+    if "walnut" not in fields:
+        fields["walnut"] = walnut_name
+
+    new_fm = _render_log_frontmatter(fields, _LOG_FM_KEY_ORDER)
+    new_content = new_fm + "\n" + entry_body + body
+    _atomic_write_text(log_path, new_content)
+
+
+def _walnut_lock_path(target_path):
+    # type: (str) -> str
+    """Return the canonical lock path for a walnut. Hash matches LD4/LD28."""
+    abs_target = os.path.abspath(target_path)
+    digest = hashlib.sha256(abs_target.encode("utf-8")).hexdigest()[:16]
+    return os.path.expanduser("~/.alive/locks/{0}.lock".format(digest))
+
+
+def _try_acquire_lock(target_path):
+    # type: (str) -> Tuple[str, Any]
+    """Acquire an exclusive lock on a target walnut per LD4/LD28.
+
+    Returns ``(strategy, handle)``:
+        strategy = "fcntl" -> handle is an open fd; release via close+unlink
+        strategy = "mkdir" -> handle is the lock dir path; release via rmtree
+
+    Raises ``RuntimeError`` with an actionable error if the lock is held by
+    a live process. Performs LD28 stale-PID recovery (POSIX) on a dead holder.
+    """
+    lock_path = _walnut_lock_path(target_path)
+    locks_dir = os.path.dirname(lock_path)
+    os.makedirs(locks_dir, exist_ok=True)
+
+    try:
+        import fcntl
+        strategy = "fcntl"
+    except ImportError:
+        fcntl = None  # type: ignore
+        strategy = "mkdir"
+
+    pid = os.getpid()
+    now_iso = now_utc_iso()
+    holder_text = "pid={0}\nstarted={1}\naction=receive\n".format(pid, now_iso)
+
+    if strategy == "fcntl":
+        # Open or create lock file.
+        for attempt in range(2):
+            fd = os.open(lock_path, os.O_CREAT | os.O_RDWR, 0o644)
+            try:
+                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)  # type: ignore
+            except BlockingIOError:
+                # Try stale PID recovery.
+                try:
+                    os.lseek(fd, 0, 0)
+                    existing = os.read(fd, 1024).decode("utf-8", errors="replace")
+                except OSError:
+                    existing = ""
+                os.close(fd)
+                holder_pid = _parse_holder_pid(existing)
+                if holder_pid and _is_pid_dead(holder_pid):
+                    if attempt == 0:
+                        # Stale lock -- remove and retry once.
+                        try:
+                            os.unlink(lock_path)
+                        except OSError:
+                            pass
+                        continue
+                raise RuntimeError(
+                    "busy: another operation holds the walnut lock "
+                    "(pid {0}). Retry later or run 'alive-p2p.py unlock "
+                    "--walnut {1}' if stuck.".format(
+                        holder_pid or "?", target_path
+                    )
+                )
+            # Acquired -- write holder text.
+            os.lseek(fd, 0, 0)
+            os.ftruncate(fd, 0)
+            os.write(fd, holder_text.encode("utf-8"))
+            try:
+                os.fsync(fd)
+            except OSError:
+                pass
+            return ("fcntl", fd)
+        # Loop fell through (shouldn't happen).
+        raise RuntimeError(
+            "busy: lock acquisition retry exhausted for {0}".format(target_path)
+        )
+
+    # mkdir fallback
+    lock_dir = lock_path + ".d"
+    for attempt in range(2):
+        try:
+            os.makedirs(lock_dir, exist_ok=False)
+        except FileExistsError:
+            holder_file = os.path.join(lock_dir, "holder.txt")
+            existing = ""
+            if os.path.isfile(holder_file):
+                try:
+                    with open(holder_file, "r", encoding="utf-8") as f:
+                        existing = f.read()
+                except (IOError, OSError):
+                    pass
+            holder_pid = _parse_holder_pid(existing)
+            if holder_pid and _is_pid_dead(holder_pid):
+                if attempt == 0:
+                    shutil.rmtree(lock_dir, ignore_errors=True)
+                    continue
+            raise RuntimeError(
+                "busy: another operation holds the walnut lock "
+                "(pid {0}). Retry later or run 'alive-p2p.py unlock "
+                "--walnut {1}' if stuck.".format(
+                    holder_pid or "?", target_path
+                )
+            )
+        # Acquired -- write holder.txt
+        with open(os.path.join(lock_dir, "holder.txt"), "w", encoding="utf-8") as f:
+            f.write(holder_text)
+        return ("mkdir", lock_dir)
+    raise RuntimeError(
+        "busy: lock acquisition retry exhausted for {0}".format(target_path)
+    )
+
+
+def _parse_holder_pid(holder_text):
+    # type: (str) -> Optional[int]
+    """Parse the PID line out of a lock holder text block."""
+    for line in holder_text.split("\n"):
+        line = line.strip()
+        if line.startswith("pid="):
+            try:
+                return int(line[4:])
+            except ValueError:
+                return None
+    return None
+
+
+def _is_pid_dead(pid):
+    # type: (int) -> bool
+    """Return True if a PID definitely does not refer to a running process.
+
+    POSIX: ``os.kill(pid, 0)`` raises ProcessLookupError on dead processes.
+    Other errors (PermissionError) are treated as "alive" because we cannot
+    distinguish them from a live process.
+    """
+    if pid <= 0:
+        return True
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return True
+    except (PermissionError, OSError):
+        return False
+    return False
+
+
+def _release_lock(strategy, handle, target_path):
+    # type: (str, Any, str) -> None
+    """Release a lock acquired via ``_try_acquire_lock``. Idempotent."""
+    if strategy == "fcntl":
+        try:
+            import fcntl
+            fcntl.flock(handle, fcntl.LOCK_UN)
+        except (ImportError, OSError):
+            pass
+        try:
+            os.close(handle)
+        except OSError:
+            pass
+        try:
+            os.unlink(_walnut_lock_path(target_path))
+        except OSError:
+            pass
+    elif strategy == "mkdir":
+        try:
+            shutil.rmtree(handle, ignore_errors=True)
+        except OSError:
+            pass
+
+
+def _journal_path(staging_dir):
+    # type: (str) -> str
+    return os.path.join(staging_dir, ".alive-receive-journal.json")
+
+
+def _write_journal(staging_dir, journal):
+    # type: (str, Dict[str, Any]) -> None
+    """Atomically write the receive journal to staging."""
+    path = _journal_path(staging_dir)
+    fd, tmp_path = tempfile.mkstemp(
+        prefix=".journal-", suffix=".json", dir=staging_dir,
+    )
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            json.dump(journal, f, indent=2, ensure_ascii=False)
+        os.replace(tmp_path, path)
+    except Exception:
+        if os.path.exists(tmp_path):
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
+        raise
+
+
+def _resolve_collision_name(target_path, leaf, today_yyyymmdd):
+    # type: (str, str, str) -> str
+    """LD3 deterministic chaining: try ``{leaf}-imported-{today}`` first, then
+    ``-2``, ``-3``, ... until a free slot is found at the target.
+    """
+    base = "{0}-imported-{1}".format(leaf, today_yyyymmdd)
+    candidate = base
+    n = 2
+    while os.path.exists(os.path.join(target_path, candidate)):
+        candidate = "{0}-{1}".format(base, n)
+        n += 1
+        if n > 1000:
+            raise RuntimeError(
+                "LD3 collision chaining gave up after 1000 attempts for "
+                "{0!r}".format(leaf)
+            )
+    return candidate
+
+
+def _resolve_plugin_root():
+    # type: () -> str
+    """Resolve the alive plugin root directory for invoking ``project.py``."""
+    env = os.environ.get("CLAUDE_PLUGIN_ROOT")
+    if env and os.path.isdir(env):
+        return env
+    # Derive from this file: <plugin>/scripts/alive-p2p.py
+    return os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+
+def _regenerate_now_json(target_path):
+    # type: (str) -> Tuple[bool, str]
+    """LD1 step 12: invoke ``project.py --walnut <target>`` as an explicit
+    subprocess. Returns ``(success, message)``.
+
+    Non-fatal: caller treats failure as a WARN per LD1.
+    """
+    plugin_root = _resolve_plugin_root()
+    project_py = os.path.join(plugin_root, "scripts", "project.py")
+    if not os.path.isfile(project_py):
+        return (False, "project.py not found at {0}".format(project_py))
+    try:
+        proc = subprocess.run(
+            [sys.executable, project_py, "--walnut", target_path],
+            capture_output=True, text=True, timeout=30, check=False,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        return (False, "subprocess error: {0}".format(exc))
+    if proc.returncode != 0:
+        return (False, "project.py exit {0}: {1}".format(
+            proc.returncode, proc.stderr.strip()[:200]
+        ))
+    return (True, "ok")
+
+
+def _format_preview(scope, bundles_in_package, effective_to_apply, prior_applied,
+                    file_count, package_size, envelope, signer, sensitivity,
+                    rename_map):
+    # type: (str, List[str], List[str], List[str], int, int, str, Optional[str], Optional[str], Optional[Dict[str, str]]) -> str
+    """Render the preview block printed before swap when --yes is not set."""
+    lines = []
+    lines.append("=== receive preview ===")
+    lines.append("scope:        {0}".format(scope))
+    lines.append("bundles:      {0}".format(
+        ", ".join(bundles_in_package) if bundles_in_package else "(none)"
+    ))
+    if scope == "bundle":
+        lines.append("to apply:     {0}".format(
+            ", ".join(effective_to_apply) if effective_to_apply else "(none)"
+        ))
+        if prior_applied:
+            lines.append("already applied: {0}".format(", ".join(prior_applied)))
+    lines.append("file count:   {0}".format(file_count))
+    lines.append("package size: {0} bytes".format(package_size))
+    lines.append("encryption:   {0}".format(envelope))
+    if signer:
+        lines.append("signer:       {0}".format(signer))
+    if sensitivity:
+        lines.append("sensitivity:  {0}".format(sensitivity))
+    if rename_map:
+        lines.append("renames:")
+        for src, dst in sorted(rename_map.items()):
+            lines.append("  {0} -> {1}".format(src, dst))
+    lines.append("=======================")
+    return "\n".join(lines)
+
+
+def receive_package(package_path,
+                    target_path,
+                    scope=None,
+                    bundle_names=None,
+                    rename=False,
+                    passphrase_env=None,
+                    private_key_path=None,
+                    verify_signature=False,
+                    yes=False,
+                    source_layout=None,
+                    strict=False,
+                    stdout=None):
+    # type: (str, str, Optional[str], Optional[List[str]], bool, Optional[str], Optional[str], bool, bool, Optional[str], bool, Any) -> Dict[str, Any]
+    """LD1 receive pipeline orchestrator (task .8 / fn-7-7cw.8).
+
+    Receives a .walnut package into a target walnut path with full
+    transactional safety. Implements all 13 LD1 steps in order.
+
+    Args:
+        package_path: input .walnut file
+        target_path: target walnut path (must NOT exist for full/snapshot;
+                     must exist for bundle scope)
+        scope: optional CLI override; must match manifest if set
+        bundle_names: optional bundle filter (only valid for bundle scope)
+        rename: apply LD3 deterministic collision chaining
+        passphrase_env: env var holding passphrase (passphrase envelopes)
+        private_key_path: path to RSA private key (RSA envelopes -- defers to .11)
+        verify_signature: refuse on signature verification failure
+        yes: skip interactive confirmation
+        source_layout: testing-only LD7 override (requires ALIVE_P2P_TESTING=1)
+        strict: turn step 10/11/12 warnings into a non-zero exit
+        stdout: optional file-like for preview output (defaults to sys.stdout)
+
+    Returns:
+        dict with keys:
+            status      -- "ok", "noop", "warn"
+            import_id   -- canonical import_id (sha256 hex)
+            scope       -- effective scope used
+            applied_bundles -- list of bundle leaves actually applied
+            bundle_renames  -- dict of {original: renamed} for collisions
+            warnings    -- list of warning strings (LD1 steps 10/11/12)
+            target      -- absolute target path
+
+    Raises:
+        FileNotFoundError -- package or required dependency missing
+        ValueError        -- pre-swap validation failure (LD1 steps 1-6)
+        RuntimeError      -- swap failure (LD1 step 9)
+        NotImplementedError -- RSA hybrid (deferred to .11)
+    """
+    if stdout is None:
+        stdout = sys.stdout
+
+    package_path = os.path.abspath(package_path)
+    target_path = os.path.abspath(target_path)
+
+    if not os.path.isfile(package_path):
+        raise FileNotFoundError(
+            "Package not found: {0}".format(package_path)
+        )
+
+    parent_target = os.path.dirname(target_path)
+    if not os.path.isdir(parent_target):
+        raise ValueError(
+            "Parent directory '{0}' does not exist. Create it first, or "
+            "choose a different --target path.".format(parent_target)
+        )
+
+    warnings_list = []  # type: List[str]
+    cleanup_paths = []  # type: List[str]
+
+    # ---- Step 1: extract --------------------------------------------------
+    envelope = _detect_envelope(package_path)
+    decrypted_archive = _decrypt_to_staging(
+        package_path, envelope, passphrase_env, private_key_path,
+        parent_target,
+    )
+    if decrypted_archive != package_path:
+        # decrypted_archive lives in a sibling temp dir; track for cleanup.
+        cleanup_paths.append(os.path.dirname(decrypted_archive))
+
+    staging = tempfile.mkdtemp(
+        prefix=".alive-receive-", dir=parent_target,
+    )
+    cleanup_paths.append(staging)
+
+    try:
+        safe_tar_extract(decrypted_archive, staging)
+    except ValueError as exc:
+        # Tar safety violation -- staging may exist but contains no files.
+        for p in cleanup_paths:
+            shutil.rmtree(p, ignore_errors=True)
+        raise ValueError(
+            "Package tar failed safety check: {0}".format(exc)
+        )
+
+    # Strip .alive/.walnut/__MACOSX dirs (defense in depth).
+    stripped = _strip_unwanted_dirs_from_staging(staging)
+    if stripped:
+        warnings_list.append(
+            "stripped {0} system dir(s) from package: {1}".format(
+                len(stripped), ", ".join(stripped)
+            )
+        )
+
+    # ---- Step 2: validate -------------------------------------------------
+    manifest_path = os.path.join(staging, "manifest.yaml")
+    if not os.path.isfile(manifest_path):
+        for p in cleanup_paths:
+            shutil.rmtree(p, ignore_errors=True)
+        raise ValueError("Package missing manifest.yaml")
+
+    manifest = read_manifest_yaml(manifest_path)
+    ok, errors = validate_manifest(manifest)
+    if not ok:
+        for p in cleanup_paths:
+            shutil.rmtree(p, ignore_errors=True)
+        raise ValueError("Manifest validation failed: " + "; ".join(errors))
+
+    ok, failures = verify_checksums(manifest, staging)
+    if not ok:
+        details = []
+        for fail in failures:
+            if fail.get("error") == "file_missing":
+                details.append("missing: {0}".format(fail["path"]))
+            else:
+                details.append("mismatch: {0}".format(fail["path"]))
+        for p in cleanup_paths:
+            shutil.rmtree(p, ignore_errors=True)
+        raise ValueError("Checksum verification failed: " + "; ".join(details))
+
+    # Recompute payload_sha256 from files[] and compare.
+    files_field = manifest.get("files", []) or []
+    expected_payload = manifest.get("payload_sha256", "")
+    actual_payload = compute_payload_sha256(files_field)
+    if expected_payload and actual_payload != expected_payload:
+        for p in cleanup_paths:
+            shutil.rmtree(p, ignore_errors=True)
+        raise ValueError(
+            "Payload sha256 mismatch: manifest says {0}, computed {1}".format(
+                expected_payload[:16], actual_payload[:16],
+            )
+        )
+
+    # Signature: verify if present and required.
+    signature = manifest.get("signature")
+    signer = None  # type: Optional[str]
+    if isinstance(signature, dict):
+        signer = signature.get("pubkey_id", "unknown")
+        if verify_signature:
+            warnings_list.append(
+                "signature verification requested but signer keyring "
+                "lookup defers to task .11; skipping verify (signer "
+                "pubkey_id: {0})".format(signer)
+            )
+
+    # Compute import_id from canonical bytes.
+    import_id = hashlib.sha256(canonical_manifest_bytes(manifest)).hexdigest()
+
+    # Effective scope: must match manifest if --scope provided.
+    manifest_scope = manifest.get("scope")
+    if not manifest_scope:
+        for p in cleanup_paths:
+            shutil.rmtree(p, ignore_errors=True)
+        raise ValueError("Package manifest has no scope field. Package is malformed.")
+    if scope and scope != manifest_scope:
+        for p in cleanup_paths:
+            shutil.rmtree(p, ignore_errors=True)
+        raise ValueError(
+            "--scope {0} does not match package scope {1}. Receive uses "
+            "the package's declared scope.".format(scope, manifest_scope)
+        )
+    effective_scope = manifest_scope
+
+    if bundle_names and effective_scope != "bundle":
+        for p in cleanup_paths:
+            shutil.rmtree(p, ignore_errors=True)
+        raise ValueError(
+            "--bundle is only valid when receiving a scope:bundle package"
+        )
+
+    # ---- Step 4: infer-layout (do this BEFORE dedupe so we can migrate) ---
+    manifest_layout = manifest.get("source_layout")
+    try:
+        inferred_layout = _infer_source_layout(
+            staging, manifest_layout, source_layout,
+        )
+    except ValueError as exc:
+        for p in cleanup_paths:
+            shutil.rmtree(p, ignore_errors=True)
+        raise
+
+    # ---- Step 6: migrate (before dedupe so bundle leaves are stable) ------
+    if inferred_layout == "v2":
+        migrate_result = migrate_v2_layout(staging)
+        if migrate_result.get("errors"):
+            for p in cleanup_paths:
+                shutil.rmtree(p, ignore_errors=True)
+            raise ValueError(
+                "v2 -> v3 staging migration failed: " + "; ".join(
+                    migrate_result["errors"]
+                )
+            )
+
+    # Now compute the bundle list visible in the (post-migrated) staging dir.
+    package_bundles = _staging_top_level_bundles(staging)
+
+    # Determine requested bundles for dedupe.
+    if effective_scope == "full":
+        requested_for_dedupe = package_bundles
+    elif effective_scope == "snapshot":
+        requested_for_dedupe = []
+    else:  # bundle
+        if bundle_names:
+            # Validate the requested leaves exist in the package.
+            unknown = [b for b in bundle_names if b not in package_bundles]
+            if unknown:
+                for p in cleanup_paths:
+                    shutil.rmtree(p, ignore_errors=True)
+                raise ValueError(
+                    "Requested bundles not in package: {0}".format(
+                        ", ".join(unknown)
+                    )
+                )
+            requested_for_dedupe = list(bundle_names)
+        else:
+            requested_for_dedupe = list(package_bundles)
+
+    # ---- Step 3: dedupe-check (LD2 subset-of-union) -----------------------
+    ledger = _read_imports_ledger(target_path)
+    is_noop, prior_applied, effective_to_apply = _compute_dedupe(
+        ledger, import_id, requested_for_dedupe,
+    )
+    if is_noop:
+        for p in cleanup_paths:
+            shutil.rmtree(p, ignore_errors=True)
+        return {
+            "status": "noop",
+            "import_id": import_id,
+            "scope": effective_scope,
+            "applied_bundles": [],
+            "bundle_renames": {},
+            "warnings": warnings_list,
+            "target": target_path,
+            "message": "already imported on prior receive; all requested "
+                       "bundles already applied",
+        }
+
+    # ---- Step 5: scope-check ----------------------------------------------
+    if effective_scope in ("full", "snapshot"):
+        if os.path.exists(target_path):
+            for p in cleanup_paths:
+                shutil.rmtree(p, ignore_errors=True)
+            raise ValueError(
+                "Target path '{0}' already exists. Choose a non-existent "
+                "path - receive will create it.".format(target_path)
+            )
+    elif effective_scope == "bundle":
+        target_key = os.path.join(target_path, "_kernel", "key.md")
+        if not os.path.isfile(target_key):
+            for p in cleanup_paths:
+                shutil.rmtree(p, ignore_errors=True)
+            raise ValueError(
+                "Target walnut '{0}' missing _kernel/key.md. Bundle scope "
+                "requires an existing valid walnut.".format(target_path)
+            )
+        # LD18 walnut identity check.
+        package_key = os.path.join(staging, "_kernel", "key.md")
+        if os.path.isfile(package_key):
+            with open(target_key, "rb") as f:
+                target_key_bytes = f.read()
+            with open(package_key, "rb") as f:
+                package_key_bytes = f.read()
+            if target_key_bytes != package_key_bytes:
+                if os.environ.get("ALIVE_P2P_ALLOW_CROSS_WALNUT") != "1":
+                    for p in cleanup_paths:
+                        shutil.rmtree(p, ignore_errors=True)
+                    raise ValueError(
+                        "Package key.md does not match target walnut "
+                        "key.md. This bundle was exported from a different "
+                        "walnut. Aborting to prevent cross-walnut grafting. "
+                        "Set ALIVE_P2P_ALLOW_CROSS_WALNUT=1 to override."
+                    )
+        # Pre-swap log validation: target log.md must have YAML frontmatter.
+        target_log = os.path.join(target_path, "_kernel", "log.md")
+        if not os.path.isfile(target_log):
+            for p in cleanup_paths:
+                shutil.rmtree(p, ignore_errors=True)
+            raise ValueError(
+                "Target walnut missing _kernel/log.md. Walnut is malformed "
+                "or incomplete."
+            )
+        with open(target_log, "r", encoding="utf-8") as f:
+            log_content = f.read()
+        _, fm_block, _ = _parse_log_frontmatter(log_content)
+        if not fm_block:
+            for p in cleanup_paths:
+                shutil.rmtree(p, ignore_errors=True)
+            raise ValueError(
+                "Target log.md has no YAML frontmatter. Walnut is malformed. "
+                "Fix manually before retrying receive."
+            )
+
+    # Sensitivity for preview (read from package _kernel/key.md if present).
+    sensitivity = manifest.get("sensitivity") or None
+    sender = manifest.get("sender", "unknown")
+
+    # ---- Bundle scope: pre-compute collision plan -------------------------
+    rename_map = {}  # type: Dict[str, str]
+    bundles_to_apply = effective_to_apply if effective_scope == "bundle" else []
+    if effective_scope == "bundle":
+        today = now_utc_iso().split("T")[0].replace("-", "")
+        for leaf in bundles_to_apply:
+            target_bundle_path = os.path.join(target_path, leaf)
+            if os.path.exists(target_bundle_path):
+                if not rename:
+                    for p in cleanup_paths:
+                        shutil.rmtree(p, ignore_errors=True)
+                    raise ValueError(
+                        "Bundle name collision at target: {0!r} already "
+                        "exists. Re-run with --rename to apply LD3 "
+                        "deterministic chaining.".format(leaf)
+                    )
+                renamed = _resolve_collision_name(target_path, leaf, today)
+                rename_map[leaf] = renamed
+
+    # ---- Step 7: preview ---------------------------------------------------
+    file_count = len(files_field)
+    try:
+        package_size = os.path.getsize(package_path)
+    except OSError:
+        package_size = 0
+    preview = _format_preview(
+        scope=effective_scope,
+        bundles_in_package=package_bundles,
+        effective_to_apply=bundles_to_apply,
+        prior_applied=prior_applied,
+        file_count=file_count,
+        package_size=package_size,
+        envelope=envelope,
+        signer=signer,
+        sensitivity=sensitivity,
+        rename_map=rename_map,
+    )
+    print(preview, file=stdout)
+    if not yes:
+        for p in cleanup_paths:
+            shutil.rmtree(p, ignore_errors=True)
+        raise ValueError(
+            "Interactive confirmation required: re-run with --yes to "
+            "proceed (preview shown above)."
+        )
+
+    # ---- Step 8: acquire-lock ---------------------------------------------
+    lock_strategy, lock_handle = _try_acquire_lock(target_path)
+
+    swap_succeeded = False
+    journal = None  # type: Optional[Dict[str, Any]]
+    log_warned = False
+    ledger_warned = False
+    project_warned = False
+    applied_bundles_final = []  # type: List[str]
+    walnut_name = os.path.basename(target_path)
+    try:
+        # ---- Step 9: transact-swap ----------------------------------------
+        if effective_scope in ("full", "snapshot"):
+            # The target does not exist; staging dir IS the target.
+            try:
+                # Strip the package's manifest.yaml from staging before move
+                # (it's a packaging artifact, not walnut content).
+                staging_manifest = os.path.join(staging, "manifest.yaml")
+                if os.path.isfile(staging_manifest):
+                    os.unlink(staging_manifest)
+                shutil.move(staging, target_path)
+                cleanup_paths = [
+                    p for p in cleanup_paths if p != staging
+                ]
+                applied_bundles_final = list(package_bundles)
+                # For snapshot scope: ensure tasks.json + completed.json + log.md
+                # are bootstrapped.
+                if effective_scope == "snapshot":
+                    kernel_dir = os.path.join(target_path, "_kernel")
+                    os.makedirs(kernel_dir, exist_ok=True)
+                    tasks_path = os.path.join(kernel_dir, "tasks.json")
+                    if not os.path.isfile(tasks_path):
+                        _atomic_write_text(tasks_path, '{"tasks": []}\n')
+                    completed_path = os.path.join(kernel_dir, "completed.json")
+                    if not os.path.isfile(completed_path):
+                        _atomic_write_text(completed_path, '{"completed": []}\n')
+                swap_succeeded = True
+            except (OSError, shutil.Error) as exc:
+                # Rollback: target may have been partially created.
+                if os.path.exists(target_path):
+                    shutil.rmtree(target_path, ignore_errors=True)
+                raise RuntimeError(
+                    "swap failed (full/snapshot): {0}".format(exc)
+                )
+        else:
+            # bundle scope: journaled move
+            ops = []  # type: List[Dict[str, Any]]
+            for leaf in bundles_to_apply:
+                src = os.path.join(staging, leaf)
+                dst_name = rename_map.get(leaf, leaf)
+                dst = os.path.join(target_path, dst_name)
+                ops.append({
+                    "op": "move",
+                    "src": src,
+                    "dst": dst,
+                    "leaf": leaf,
+                    "renamed_to": dst_name,
+                    "status": "pending",
+                })
+            journal = {
+                "target": target_path,
+                "import_id": import_id,
+                "started_at": now_utc_iso(),
+                "operations": ops,
+            }
+            _write_journal(staging, journal)
+
+            done_ops = []  # type: List[Dict[str, Any]]
+            try:
+                for op in ops:
+                    op["status"] = "committing"
+                    _write_journal(staging, journal)
+                    shutil.move(op["src"], op["dst"])
+                    op["status"] = "done"
+                    _write_journal(staging, journal)
+                    done_ops.append(op)
+                    applied_bundles_final.append(op["renamed_to"])
+                swap_succeeded = True
+            except (OSError, shutil.Error) as exc:
+                # Reverse rollback.
+                for op in reversed(done_ops):
+                    try:
+                        shutil.move(op["dst"], op["src"])
+                        op["status"] = "rolled_back"
+                    except (OSError, shutil.Error):
+                        op["status"] = "rollback_failed"
+                _write_journal(staging, journal)
+                # Preserve staging for diagnosis.
+                incomplete_path = os.path.join(
+                    parent_target,
+                    ".alive-receive-incomplete-{0}".format(
+                        now_utc_iso().replace(":", "")
+                    ),
+                )
+                try:
+                    shutil.move(staging, incomplete_path)
+                    cleanup_paths = [
+                        p for p in cleanup_paths if p != staging
+                    ]
+                    print("staging preserved at {0}".format(incomplete_path),
+                          file=sys.stderr)
+                except (OSError, shutil.Error):
+                    pass
+                raise RuntimeError(
+                    "swap failed (bundle scope): {0}".format(exc)
+                )
+
+        # ---- Step 10: log-edit (NON-FATAL post-swap) ----------------------
+        try:
+            if effective_scope == "snapshot":
+                allow_create = True
+            elif effective_scope == "full":
+                allow_create = True
+            else:
+                allow_create = False
+            iso_now = now_utc_iso()
+            session_id = resolve_session_id()
+            _edit_log_md(
+                target_path=target_path,
+                iso_timestamp=iso_now,
+                session_id=session_id,
+                sender=sender,
+                scope=effective_scope,
+                bundles=applied_bundles_final or None,
+                source_layout=inferred_layout,
+                import_id=import_id,
+                walnut_name=walnut_name,
+                allow_create=allow_create,
+            )
+        except (FileNotFoundError, ValueError, OSError) as exc:
+            log_warned = True
+            warnings_list.append(
+                "log edit failed - walnut structurally correct but log "
+                "missing this import entry. Recovery: alive-p2p.py "
+                "log-import --walnut {0} --import-id {1} ({2})".format(
+                    target_path, import_id[:16], exc
+                )
+            )
+
+        # ---- Step 11: ledger-write (NON-FATAL post-swap) -------------------
+        try:
+            new_entry = {
+                "import_id": import_id,
+                "format_version": manifest.get("format_version", "2.1.0"),
+                "source_layout": inferred_layout,
+                "scope": effective_scope,
+                "package_bundles": package_bundles,
+                "applied_bundles": applied_bundles_final,
+                "bundle_renames": rename_map,
+                "sender": sender,
+                "created": manifest.get("created", ""),
+                "received_at": now_utc_iso(),
+            }
+            ledger = _read_imports_ledger(target_path)
+            ledger.setdefault("imports", []).append(new_entry)
+            _write_imports_ledger(target_path, ledger)
+        except (OSError, IOError, ValueError) as exc:
+            ledger_warned = True
+            warnings_list.append(
+                "ledger write failed - future duplicate imports of this "
+                "package will not dedupe. Recovery: manually append entry "
+                "to _kernel/imports.json ({0})".format(exc)
+            )
+
+        # ---- Step 12: regenerate-now (NON-FATAL) --------------------------
+        if not os.environ.get("ALIVE_P2P_SKIP_REGEN"):
+            ok_regen, msg = _regenerate_now_json(target_path)
+            if not ok_regen:
+                project_warned = True
+                warnings_list.append(
+                    "now.json regeneration failed - walnut is correct but "
+                    "projection is stale. Recovery: python3 {0}/scripts/"
+                    "project.py --walnut {1} ({2})".format(
+                        _resolve_plugin_root(), target_path, msg,
+                    )
+                )
+
+    finally:
+        # ---- Step 13: cleanup-and-release (ALWAYS RUNS) -------------------
+        _release_lock(lock_strategy, lock_handle, target_path)
+
+        if swap_succeeded:
+            # If steps 10/11 warned: preserve staging+journal as .incomplete.
+            if (log_warned or ledger_warned) and staging and os.path.isdir(staging):
+                stamp = now_utc_iso().replace(":", "")
+                incomplete = os.path.join(
+                    parent_target,
+                    ".alive-receive-incomplete-{0}".format(stamp),
+                )
+                try:
+                    shutil.move(staging, incomplete)
+                    cleanup_paths = [p for p in cleanup_paths if p != staging]
+                except (OSError, shutil.Error):
+                    pass
+            else:
+                # Clean delete journal + staging.
+                if staging and os.path.isdir(staging):
+                    shutil.rmtree(staging, ignore_errors=True)
+                cleanup_paths = [p for p in cleanup_paths if p != staging]
+
+        # Always clean any decrypt temp dirs.
+        for p in cleanup_paths:
+            if p and os.path.isdir(p):
+                shutil.rmtree(p, ignore_errors=True)
+
+    status = "ok"
+    if log_warned or ledger_warned or project_warned:
+        status = "warn"
+        if strict:
+            # Caller (CLI) decides exit code based on this status.
+            pass
+
+    return {
+        "status": status,
+        "import_id": import_id,
+        "scope": effective_scope,
+        "applied_bundles": applied_bundles_final,
+        "bundle_renames": rename_map,
+        "warnings": warnings_list,
+        "target": target_path,
+    }
+
+
+# ---------------------------------------------------------------------------
 # CLI
 # ---------------------------------------------------------------------------
 #
 # The full user-facing CLI (share / receive / encrypt / decrypt / sign /
 # verify) lands in later fn-7-7cw tasks. Right now ``migrate``, ``create``,
-# and ``list-bundles`` are wired up; the receive pipeline (.8) and the
-# auxiliary verbs (info, verify, log-import, unlock) follow.
+# ``list-bundles``, ``receive``, ``info``, ``log-import``, ``unlock``, and
+# ``verify`` are wired up.
 
 
 def _cmd_migrate(args):
@@ -4248,6 +5674,394 @@ def _cmd_list_bundles(args):
     return 0
 
 
+def _cmd_receive(args):
+    # type: (Any) -> int
+    """Run the LD1 receive pipeline against an input package + target walnut.
+
+    Wraps ``receive_package`` and translates exceptions to actionable
+    exit codes:
+        0 -- success or no-op (with warnings if --strict not set)
+        1 -- pre-swap or swap failure
+        2 -- filesystem precondition (parent missing, etc.)
+    """
+    try:
+        result = receive_package(
+            package_path=args.input,
+            target_path=args.target,
+            scope=args.scope,
+            bundle_names=args.bundle or None,
+            rename=args.rename,
+            passphrase_env=args.passphrase_env,
+            private_key_path=args.private_key,
+            verify_signature=args.verify_signature,
+            yes=args.yes,
+            source_layout=args.source_layout,
+            strict=args.strict,
+        )
+    except FileNotFoundError as exc:
+        print("error: {0}".format(exc), file=sys.stderr)
+        return 2
+    except NotImplementedError as exc:
+        print("error: {0}".format(exc), file=sys.stderr)
+        return 1
+    except (ValueError, RuntimeError) as exc:
+        print("error: {0}".format(exc), file=sys.stderr)
+        return 1
+
+    if result.get("status") == "noop":
+        print("noop: {0}".format(result.get("message", "already imported")))
+        return 0
+
+    print("received package: target={0}".format(result["target"]))
+    print("  import_id:        {0}".format(result["import_id"][:16]))
+    print("  scope:            {0}".format(result["scope"]))
+    if result["applied_bundles"]:
+        print("  applied bundles:  {0}".format(
+            ", ".join(result["applied_bundles"])
+        ))
+    if result["bundle_renames"]:
+        print("  renames:")
+        for src, dst in sorted(result["bundle_renames"].items()):
+            print("    {0} -> {1}".format(src, dst))
+    if result["warnings"]:
+        print("  warnings:")
+        for w in result["warnings"]:
+            print("    - {0}".format(w))
+
+    if args.strict and result.get("status") == "warn":
+        return 1
+    return 0
+
+
+def _cmd_info(args):
+    # type: (Any) -> int
+    """Display package metadata. Envelope-only mode for missing creds.
+
+    Behaviour by envelope (LD24):
+        gzip       -- read manifest.yaml directly from tar, full output
+        passphrase -- requires --passphrase-env; without it, envelope-only
+                      output and exit 0 (info is a discovery tool)
+        rsa        -- requires --private-key; without it, envelope-only
+                      output and exit 0
+    """
+    package = os.path.abspath(args.package)
+    if not os.path.isfile(package):
+        print("error: package not found: {0}".format(package), file=sys.stderr)
+        return 1
+
+    try:
+        envelope = _detect_envelope(package)
+    except (ValueError, FileNotFoundError) as exc:
+        print("error: {0}".format(exc), file=sys.stderr)
+        return 1
+
+    try:
+        size = os.path.getsize(package)
+    except OSError:
+        size = 0
+
+    if envelope == "gzip":
+        # Read manifest directly from the tarball.
+        try:
+            with tarfile.open(package, "r:gz") as tar:
+                manifest_member = None
+                for m in tar.getmembers():
+                    if m.name == "manifest.yaml" or m.name.endswith("/manifest.yaml"):
+                        manifest_member = m
+                        break
+                if manifest_member is None:
+                    print("error: package missing manifest.yaml", file=sys.stderr)
+                    return 1
+                f = tar.extractfile(manifest_member)
+                manifest_bytes = f.read() if f else b""
+        except (tarfile.TarError, OSError) as exc:
+            print("error: {0}".format(exc), file=sys.stderr)
+            return 1
+        try:
+            manifest = parse_manifest(manifest_bytes.decode("utf-8"))
+        except (ValueError, UnicodeDecodeError) as exc:
+            print("error: parse manifest: {0}".format(exc), file=sys.stderr)
+            return 1
+        info_dict = {
+            "package": package,
+            "size": size,
+            "encryption": "none",
+            "format_version": manifest.get("format_version", ""),
+            "source_layout": manifest.get("source_layout", ""),
+            "scope": manifest.get("scope", ""),
+            "sender": manifest.get("sender", "unknown"),
+            "created": manifest.get("created", ""),
+            "bundles": manifest.get("bundles", []) or [],
+            "exclusions_applied": manifest.get("exclusions_applied", []) or [],
+            "file_count": len(manifest.get("files", []) or []),
+            "signature": "present" if manifest.get("signature") else "absent",
+        }
+        try:
+            info_dict["import_id"] = hashlib.sha256(
+                canonical_manifest_bytes(manifest)
+            ).hexdigest()
+        except Exception:
+            info_dict["import_id"] = "unknown"
+    else:
+        # Encrypted: emit envelope-only when creds missing.
+        if envelope == "passphrase" and not args.passphrase_env:
+            info_dict = {
+                "package": package,
+                "size": size,
+                "encryption": "passphrase",
+                "note": "Re-run with --passphrase-env <ENV_VAR> to read the "
+                        "full manifest.",
+            }
+        elif envelope == "rsa" and not args.private_key:
+            info_dict = {
+                "package": package,
+                "size": size,
+                "encryption": "rsa",
+                "note": "Re-run with --private-key <PATH> to read the full "
+                        "manifest.",
+            }
+        else:
+            print(
+                "error: full info for encrypted packages requires the "
+                "decryption credentials and the LD21 RSA path which lands "
+                "in task .11. Envelope-only output not requested.",
+                file=sys.stderr,
+            )
+            return 1
+
+    if args.json:
+        print(json.dumps(info_dict, indent=2, ensure_ascii=False))
+    else:
+        print("Package:        {0}".format(info_dict["package"]))
+        print("Size:           {0} bytes".format(info_dict["size"]))
+        print("Encryption:     {0}".format(info_dict["encryption"]))
+        if info_dict.get("format_version"):
+            print("Format version: {0}".format(info_dict["format_version"]))
+        if info_dict.get("source_layout"):
+            print("Source layout:  {0}".format(info_dict["source_layout"]))
+        if info_dict.get("scope"):
+            print("Scope:          {0}".format(info_dict["scope"]))
+        if info_dict.get("sender"):
+            print("Sender:         {0}".format(info_dict["sender"]))
+        if info_dict.get("created"):
+            print("Created:        {0}".format(info_dict["created"]))
+        if info_dict.get("bundles"):
+            print("Bundles:        {0}".format(
+                ", ".join(info_dict["bundles"])
+            ))
+        if info_dict.get("exclusions_applied"):
+            print("Exclusions:     {0}".format(
+                ", ".join(info_dict["exclusions_applied"])
+            ))
+        if "file_count" in info_dict:
+            print("File count:     {0}".format(info_dict["file_count"]))
+        if "signature" in info_dict:
+            print("Signature:      {0}".format(info_dict["signature"]))
+        if "import_id" in info_dict:
+            print("import_id:      {0}".format(info_dict["import_id"][:16]))
+        if "note" in info_dict:
+            print("note:           {0}".format(info_dict["note"]))
+
+    return 0
+
+
+def _cmd_log_import(args):
+    # type: (Any) -> int
+    """Manual log-import recovery tool (LD24). Append a single import entry
+    to ``{walnut}/_kernel/log.md`` after the YAML frontmatter.
+
+    Used when the receive pipeline's step 10 failed post-swap.
+    """
+    walnut = os.path.abspath(args.walnut)
+    if not os.path.isdir(walnut):
+        print("error: walnut not found: {0}".format(walnut), file=sys.stderr)
+        return 1
+    bundles = None  # type: Optional[List[str]]
+    if args.bundles:
+        bundles = [b.strip() for b in args.bundles.split(",") if b.strip()]
+    try:
+        _edit_log_md(
+            target_path=walnut,
+            iso_timestamp=now_utc_iso(),
+            session_id=resolve_session_id(),
+            sender=args.sender or "unknown",
+            scope=args.scope or "bundle",
+            bundles=bundles,
+            source_layout=args.source_layout or "v3",
+            import_id=args.import_id,
+            walnut_name=os.path.basename(walnut),
+            allow_create=False,
+        )
+    except (FileNotFoundError, ValueError, OSError) as exc:
+        print("error: {0}".format(exc), file=sys.stderr)
+        return 1
+    print("ok: log entry appended to {0}/_kernel/log.md".format(walnut))
+    return 0
+
+
+def _cmd_unlock(args):
+    # type: (Any) -> int
+    """Force-release a stuck walnut lock per LD28. Checks BOTH lock artifacts
+    (``.lock`` file and ``.lock.d/`` dir) and removes the one that exists if
+    its holder PID is dead.
+
+    Exit codes:
+        0 -- removed an active stale lock
+        1 -- refused (live PID)
+        2 -- no lock artifact found
+    """
+    walnut = os.path.abspath(args.walnut)
+    base = _walnut_lock_path(walnut)
+    file_path = base
+    dir_path = base + ".d"
+
+    found = None
+    holder_text = ""
+    if os.path.isfile(file_path):
+        found = file_path
+        try:
+            with open(file_path, "r", encoding="utf-8") as f:
+                holder_text = f.read()
+        except (IOError, OSError):
+            pass
+    elif os.path.isdir(dir_path):
+        found = dir_path
+        holder_file = os.path.join(dir_path, "holder.txt")
+        if os.path.isfile(holder_file):
+            try:
+                with open(holder_file, "r", encoding="utf-8") as f:
+                    holder_text = f.read()
+            except (IOError, OSError):
+                pass
+
+    if not found:
+        print("no lock artifact found for {0}".format(walnut))
+        return 2
+
+    holder_pid = _parse_holder_pid(holder_text)
+    if holder_pid and not _is_pid_dead(holder_pid):
+        print(
+            "error: lock held by running process {0}. Kill the process "
+            "or wait for it to complete.".format(holder_pid),
+            file=sys.stderr,
+        )
+        return 1
+
+    try:
+        if os.path.isfile(found):
+            os.unlink(found)
+        else:
+            shutil.rmtree(found, ignore_errors=True)
+    except OSError as exc:
+        print("error: cannot remove lock: {0}".format(exc), file=sys.stderr)
+        return 1
+    print("ok: lock removed (was holder pid {0})".format(holder_pid or "?"))
+    return 0
+
+
+def _cmd_verify(args):
+    # type: (Any) -> int
+    """Verify a package: signature, per-file checksums, payload sha256,
+    schema. Extracts to a temp dir on the same filesystem as the package
+    and cleans up on exit.
+
+    Exit code 0 if all checks pass, 1 otherwise.
+    """
+    package = os.path.abspath(args.package)
+    if not os.path.isfile(package):
+        print("error: package not found: {0}".format(package), file=sys.stderr)
+        return 1
+    parent = os.path.dirname(package)
+
+    try:
+        envelope = _detect_envelope(package)
+    except (ValueError, FileNotFoundError) as exc:
+        print("error: {0}".format(exc), file=sys.stderr)
+        return 1
+
+    try:
+        plaintext = _decrypt_to_staging(
+            package, envelope, args.passphrase_env, args.private_key, parent,
+        )
+    except (NotImplementedError, ValueError, RuntimeError) as exc:
+        print("error: {0}".format(exc), file=sys.stderr)
+        return 1
+
+    cleanup = []  # type: List[str]
+    if plaintext != package:
+        cleanup.append(os.path.dirname(plaintext))
+
+    staging = tempfile.mkdtemp(prefix=".alive-verify-", dir=parent)
+    cleanup.append(staging)
+
+    rc = 0
+    try:
+        try:
+            safe_tar_extract(plaintext, staging)
+        except ValueError as exc:
+            print("FAIL tar safety: {0}".format(exc), file=sys.stderr)
+            return 1
+        manifest_path = os.path.join(staging, "manifest.yaml")
+        if not os.path.isfile(manifest_path):
+            print("FAIL: manifest.yaml missing", file=sys.stderr)
+            return 1
+        try:
+            manifest = read_manifest_yaml(manifest_path)
+        except (ValueError, IOError, OSError) as exc:
+            print("FAIL parse manifest: {0}".format(exc), file=sys.stderr)
+            return 1
+
+        ok, errors = validate_manifest(manifest)
+        print("Format version: {0} ({1})".format(
+            "PASS" if ok else "FAIL",
+            manifest.get("format_version", "?"),
+        ))
+        print("Source layout:  PASS ({0})".format(
+            manifest.get("source_layout", "?")
+        ))
+        print("Scope:          {0}".format(manifest.get("scope", "?")))
+        print("Schema:         {0}".format("PASS" if ok else "FAIL"))
+        if not ok:
+            for e in errors:
+                print("  - {0}".format(e), file=sys.stderr)
+            rc = 1
+
+        ok_chk, failures = verify_checksums(manifest, staging)
+        files_count = len(manifest.get("files", []) or [])
+        if ok_chk:
+            print("File checksums: PASS ({0} files)".format(files_count))
+        else:
+            print("File checksums: FAIL ({0} failures)".format(len(failures)))
+            rc = 1
+
+        expected_payload = manifest.get("payload_sha256", "")
+        actual_payload = compute_payload_sha256(manifest.get("files", []) or [])
+        if expected_payload and actual_payload == expected_payload:
+            print("Payload sha256: PASS")
+        elif expected_payload:
+            print("Payload sha256: FAIL (manifest {0} != computed {1})".format(
+                expected_payload[:16], actual_payload[:16],
+            ))
+            rc = 1
+        else:
+            print("Payload sha256: SKIP (manifest field missing)")
+
+        sig = manifest.get("signature")
+        if sig:
+            print("Signature:      present (signer pubkey_id: {0}) - "
+                  "verification defers to task .11".format(
+                      sig.get("pubkey_id", "?")
+                  ))
+        else:
+            print("Signature:      absent")
+    finally:
+        for p in cleanup:
+            if p and os.path.isdir(p):
+                shutil.rmtree(p, ignore_errors=True)
+
+    return rc
+
+
 def _cli(argv=None):
     # type: (Optional[List[str]]) -> None
     """Dispatch the argparse CLI for the v3 P2P share + maintenance verbs."""
@@ -4393,6 +6207,178 @@ def _cli(argv=None):
         help="Emit the result dict as JSON instead of human-readable text.",
     )
     migrate_p.set_defaults(func=_cmd_migrate)
+
+    # ---- receive ---------------------------------------------------------
+    receive_p = sub.add_parser(
+        "receive",
+        help="Import a .walnut package into a target walnut (LD1 pipeline).",
+    )
+    receive_p.add_argument(
+        "input",
+        help="Path to the .walnut package to import.",
+    )
+    receive_p.add_argument(
+        "--target",
+        required=True,
+        help="Target walnut path (must NOT exist for full/snapshot scope; "
+             "MUST exist for bundle scope).",
+    )
+    receive_p.add_argument(
+        "--scope",
+        default=None,
+        choices=("full", "bundle", "snapshot"),
+        help="Optional CLI override; must match the package's manifest scope.",
+    )
+    receive_p.add_argument(
+        "--bundle",
+        action="append",
+        default=[],
+        help="Bundle leaf name (repeatable; valid only for --scope bundle).",
+    )
+    receive_p.add_argument(
+        "--rename",
+        action="store_true",
+        help="Apply LD3 deterministic collision chaining on bundle name "
+             "collisions instead of refusing.",
+    )
+    receive_p.add_argument(
+        "--passphrase-env",
+        default=None,
+        help="Env var holding the passphrase (required for passphrase "
+             "envelopes).",
+    )
+    receive_p.add_argument(
+        "--private-key",
+        default=None,
+        help="Path to the local RSA private key (required for RSA hybrid "
+             "envelopes; defers to task .11).",
+    )
+    receive_p.add_argument(
+        "--verify-signature",
+        action="store_true",
+        help="Refuse the receive on signature verification failure.",
+    )
+    receive_p.add_argument(
+        "--yes",
+        action="store_true",
+        help="Skip the interactive preview confirmation. REQUIRED for "
+             "non-interactive use.",
+    )
+    receive_p.add_argument(
+        "--source-layout",
+        default=None,
+        choices=("v2", "v3"),
+        help="Override LD7 layout inference (requires ALIVE_P2P_TESTING=1).",
+    )
+    receive_p.add_argument(
+        "--strict",
+        action="store_true",
+        help="Turn LD1 step 10/11/12 warnings into a non-zero exit code.",
+    )
+    receive_p.set_defaults(func=_cmd_receive)
+
+    # ---- info ------------------------------------------------------------
+    info_p = sub.add_parser(
+        "info",
+        help="Display package metadata (envelope-only for encrypted "
+             "packages without credentials).",
+    )
+    info_p.add_argument(
+        "package",
+        help="Path to the .walnut package.",
+    )
+    info_p.add_argument(
+        "--passphrase-env",
+        default=None,
+        help="Env var holding the passphrase for full info on passphrase "
+             "envelopes.",
+    )
+    info_p.add_argument(
+        "--private-key",
+        default=None,
+        help="Path to the RSA private key for full info on RSA envelopes "
+             "(deferred to .11).",
+    )
+    info_p.add_argument(
+        "--json",
+        action="store_true",
+        help="Emit JSON instead of human-readable text.",
+    )
+    info_p.set_defaults(func=_cmd_info)
+
+    # ---- log-import ------------------------------------------------------
+    logimp_p = sub.add_parser(
+        "log-import",
+        help="Manually append an import entry to a walnut log.md (recovery "
+             "tool for LD1 step 10 failures).",
+    )
+    logimp_p.add_argument(
+        "--walnut",
+        required=True,
+        help="Target walnut path.",
+    )
+    logimp_p.add_argument(
+        "--import-id",
+        required=True,
+        help="Import id (sha256 hex) to record in the entry.",
+    )
+    logimp_p.add_argument(
+        "--sender",
+        default=None,
+        help="Sender handle to record in the entry (default 'unknown').",
+    )
+    logimp_p.add_argument(
+        "--scope",
+        default=None,
+        choices=("full", "bundle", "snapshot"),
+        help="Scope to record in the entry (default 'bundle').",
+    )
+    logimp_p.add_argument(
+        "--bundles",
+        default=None,
+        help="Comma-separated bundle leaf names to record.",
+    )
+    logimp_p.add_argument(
+        "--source-layout",
+        default=None,
+        help="Source layout to record (default 'v3').",
+    )
+    logimp_p.set_defaults(func=_cmd_log_import)
+
+    # ---- unlock ----------------------------------------------------------
+    unlock_p = sub.add_parser(
+        "unlock",
+        help="Force-release a stuck walnut lock (stale PID recovery).",
+    )
+    unlock_p.add_argument(
+        "--walnut",
+        required=True,
+        help="Target walnut path whose lock should be released.",
+    )
+    unlock_p.set_defaults(func=_cmd_unlock)
+
+    # ---- verify ----------------------------------------------------------
+    verify_p = sub.add_parser(
+        "verify",
+        help="Verify a package: signature, per-file checksums, payload sha.",
+    )
+    verify_p.add_argument(
+        "--package",
+        required=True,
+        help="Path to the .walnut package.",
+    )
+    verify_p.add_argument(
+        "--passphrase-env",
+        default=None,
+        help="Env var holding the passphrase for passphrase envelopes.",
+    )
+    verify_p.add_argument(
+        "--private-key",
+        default=None,
+        help="Path to the RSA private key for RSA hybrid envelopes "
+             "(deferred to .11).",
+    )
+    verify_p.set_defaults(func=_cmd_verify)
 
     args = parser.parse_args(argv)
     if not getattr(args, "cmd", None):
