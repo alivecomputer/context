@@ -110,6 +110,50 @@ The receive pipeline raises `ValueError("v2 -> v3 staging migration
 failed: ...")` IFF `errors` is non-empty. Warnings are logged but do not
 abort the receive.
 
+The result is also threaded back to callers via the `migration` key on
+`receive_package`'s return dict (alongside `source_layout` so non-v2
+receives are easy to recognise — the value is `None` for v3/agnostic
+packages):
+
+```python
+result = receive_package(...)
+if result["source_layout"] == "v2":
+    print("Migrated", len(result["migration"]["bundles_migrated"]),
+          "bundles, converted", result["migration"]["tasks_converted"],
+          "tasks")
+```
+
+## Preview surfacing
+
+When the receive pipeline runs migration (LD1 step 6), the `migrate_v2_layout`
+result dict is rendered as a bordered block ABOVE the standard preview at
+LD1 step 7. Example:
+
+```
+╭─ v2 -> v3 migration required
+│  Package source_layout: v2
+│  Actions:
+│    - Dropped _kernel/_generated/
+│    - Flattened bundles/shielding-review -> shielding-review
+│    - Converted shielding-review/tasks.md -> tasks.json (4 tasks)
+│  Bundles migrated: shielding-review
+│  Tasks converted:  4
+╰─
+
+=== receive preview ===
+scope:        full
+bundles:      shielding-review
+file count:   12
+package size: 4321 bytes
+encryption:   gzip
+=======================
+```
+
+The block only renders for `source_layout == "v2"` packages — v3 packages
+get the standard preview alone, with no migration noise. Warnings and
+errors (if any) are listed inline so the human sees the full picture
+before they confirm the swap with `--yes`.
+
 ## Idempotency
 
 Running `migrate_v2_layout` against an already-v3 staging tree is a
@@ -205,6 +249,23 @@ If a v2 bundle somehow has BOTH `tasks.md` AND `tasks.json` (corrupted
 sender), the migration leaves `tasks.json` untouched and deletes the
 `tasks.md`. A warning is recorded. The receiver inherits whatever was in
 `tasks.json`.
+
+## Failure semantics
+
+A migration failure aborts the receive WITHOUT touching the target
+walnut. The pipeline:
+
+1. Catches `errors[]` from `migrate_v2_layout`.
+2. Renames the in-flight staging dir to
+   `{parent}/.alive-receive-incomplete-{iso_timestamp}/` next to the
+   target so the partially-migrated tree survives for inspection.
+3. Prints the preserved path to `stderr`.
+4. Cleans up any decryption temp dirs.
+5. Raises `ValueError("v2 -> v3 staging migration failed: ...")` with
+   the joined error list.
+
+The target is never created, never modified, and never sees any state
+from the failed migration. The `imports.json` ledger is untouched.
 
 ## Debugging a failed migration
 

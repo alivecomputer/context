@@ -4886,12 +4886,85 @@ def _regenerate_now_json(target_path):
     return (True, "ok")
 
 
+def _format_migration_block(migrate_result, source_layout):
+    # type: (Optional[Dict[str, Any]], str) -> str
+    """Render the v2 -> v3 migration block shown above the receive preview.
+
+    Returns an empty string when ``migrate_result`` is ``None`` or the
+    inferred ``source_layout`` is not ``"v2"``. Otherwise produces a bordered
+    block enumerating the migration actions, the bundles touched, the task
+    conversion count, and any warnings/errors recorded by
+    ``migrate_v2_layout``. The shape matches the LD8 surfacing contract from
+    the receive skill (fn-7-7cw.9):
+
+        ╭─ v2 -> v3 migration required
+        │  Package source_layout: v2
+        │  Actions:
+        │    - Dropped _kernel/_generated/
+        │    - Flattened bundles/foo -> foo
+        │  Bundles migrated: foo, bar-imported
+        │  Tasks converted:  7
+        │  Warnings:
+        │    - bundle 'baz' had no parseable entries
+        ╰-
+    """
+    if migrate_result is None or source_layout != "v2":
+        return ""
+
+    lines = []
+    lines.append("\u256d\u2500 v2 -> v3 migration required")
+    lines.append("\u2502  Package source_layout: v2")
+
+    actions = migrate_result.get("actions") or []
+    if actions:
+        lines.append("\u2502  Actions:")
+        for action in actions:
+            lines.append("\u2502    - {0}".format(action))
+    else:
+        lines.append("\u2502  Actions: (none)")
+
+    bundles_migrated = migrate_result.get("bundles_migrated") or []
+    if bundles_migrated:
+        lines.append("\u2502  Bundles migrated: {0}".format(
+            ", ".join(bundles_migrated)
+        ))
+
+    tasks_converted = migrate_result.get("tasks_converted", 0)
+    if tasks_converted:
+        lines.append("\u2502  Tasks converted:  {0}".format(tasks_converted))
+
+    warnings_block = migrate_result.get("warnings") or []
+    if warnings_block:
+        lines.append("\u2502  Warnings:")
+        for warn in warnings_block:
+            lines.append("\u2502    - {0}".format(warn))
+
+    errors_block = migrate_result.get("errors") or []
+    if errors_block:
+        lines.append("\u2502  Errors:")
+        for err in errors_block:
+            lines.append("\u2502    - {0}".format(err))
+
+    lines.append("\u2570\u2500")
+    return "\n".join(lines)
+
+
 def _format_preview(scope, bundles_in_package, effective_to_apply, prior_applied,
                     file_count, package_size, envelope, signer, sensitivity,
-                    rename_map):
-    # type: (str, List[str], List[str], List[str], int, int, str, Optional[str], Optional[str], Optional[Dict[str, str]]) -> str
-    """Render the preview block printed before swap when --yes is not set."""
+                    rename_map, migrate_result=None, source_layout=None):
+    # type: (str, List[str], List[str], List[str], int, int, str, Optional[str], Optional[str], Optional[Dict[str, str]], Optional[Dict[str, Any]], Optional[str]) -> str
+    """Render the preview block printed before swap when --yes is not set.
+
+    When ``migrate_result`` is provided AND ``source_layout == "v2"``, the
+    v2 -> v3 migration summary is rendered as a bordered block ABOVE the
+    standard preview so the human sees the rewrite the receive pipeline
+    just performed in staging before they confirm the swap.
+    """
     lines = []
+    migration_block = _format_migration_block(migrate_result, source_layout)
+    if migration_block:
+        lines.append(migration_block)
+        lines.append("")  # spacer between migration block and preview
     lines.append("=== receive preview ===")
     lines.append("scope:        {0}".format(scope))
     lines.append("bundles:      {0}".format(
@@ -4960,6 +5033,11 @@ def receive_package(package_path,
             bundle_renames  -- dict of {original: renamed} for collisions
             warnings    -- list of warning strings (LD1 steps 10/11/12)
             target      -- absolute target path
+            source_layout -- "v2", "v3", or "agnostic" (LD7 inference)
+            migration   -- migrate_v2_layout result dict if source_layout
+                           was "v2", else None. Carries actions[],
+                           warnings[], bundles_migrated[], tasks_converted,
+                           errors[] -- callers can surface these directly.
 
     Raises:
         FileNotFoundError -- package or required dependency missing
@@ -5110,9 +5188,32 @@ def receive_package(package_path,
         raise
 
     # ---- Step 6: migrate (before dedupe so bundle leaves are stable) ------
+    # ``migrate_result`` is None for v3/agnostic packages and a result dict
+    # for v2 packages so the preview step can surface the LD8 transform log
+    # to the human and the return value can carry it back to callers/tests.
+    migrate_result = None  # type: Optional[Dict[str, Any]]
     if inferred_layout == "v2":
         migrate_result = migrate_v2_layout(staging)
         if migrate_result.get("errors"):
+            # LD8: migration failure aborts receive WITHOUT touching the
+            # target. Preserve the staging tree as
+            # .alive-receive-incomplete-{ts} next to the target so the
+            # human can inspect or rerun ``alive-p2p.py migrate`` against it.
+            preserved = None
+            try:
+                stamp = now_utc_iso().replace(":", "")
+                preserved = os.path.join(
+                    parent_target,
+                    ".alive-receive-incomplete-{0}".format(stamp),
+                )
+                shutil.move(staging, preserved)
+                cleanup_paths = [p for p in cleanup_paths if p != staging]
+                print(
+                    "staging preserved at {0}".format(preserved),
+                    file=sys.stderr,
+                )
+            except (OSError, shutil.Error):
+                preserved = None
             for p in cleanup_paths:
                 shutil.rmtree(p, ignore_errors=True)
             raise ValueError(
@@ -5260,6 +5361,8 @@ def receive_package(package_path,
         signer=signer,
         sensitivity=sensitivity,
         rename_map=rename_map,
+        migrate_result=migrate_result,
+        source_layout=inferred_layout,
     )
     print(preview, file=stdout)
     if not yes:
@@ -5490,6 +5593,8 @@ def receive_package(package_path,
         "bundle_renames": rename_map,
         "warnings": warnings_list,
         "target": target_path,
+        "source_layout": inferred_layout,
+        "migration": migrate_result,
     }
 
 
