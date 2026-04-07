@@ -1384,8 +1384,9 @@ def _stage_files(
     stub_kernel_history=True,
     staging_dir=None,
     warnings=None,
+    source_layout="v3",
 ):
-    # type: (str, str, Optional[List[str]], Optional[str], Optional[str], bool, Optional[str], Optional[List[str]]) -> str
+    # type: (str, str, Optional[List[str]], Optional[str], Optional[str], bool, Optional[str], Optional[List[str]], str) -> str
     """Dispatch to the per-scope staging routine and return the staging dir.
 
     Creates a temp staging directory (unless ``staging_dir`` is provided) and
@@ -1402,12 +1403,22 @@ def _stage_files(
         staging_dir: if provided, stage into this existing empty directory
             instead of creating a temp dir
         warnings: optional list for accumulating warnings
+        source_layout: ``"v3"`` (default, the only production value) or ``"v2"``
+            (testing only -- bypasses migration and produces a v2-shaped package
+            with the legacy ``bundles/`` container, per LD11). The staging
+            helpers themselves are layout-agnostic; the parameter is accepted
+            here so callers can plumb it through to ``generate_manifest`` and
+            so the dispatcher can validate the value early.
     """
     if scope not in ("full", "bundle", "snapshot"):
         raise ValueError(
             "Unknown staging scope '{0}'; expected full|bundle|snapshot".format(
                 scope
             )
+        )
+    if source_layout not in ("v2", "v3"):
+        raise ValueError(
+            "Unknown source_layout '{0}'; expected v2|v3".format(source_layout)
         )
 
     walnut_path = os.path.abspath(walnut_path)
@@ -1445,6 +1456,851 @@ def _stage_files(
         raise
 
     return staging_dir
+
+
+# ---------------------------------------------------------------------------
+# v3 manifest generation, validation, and stdlib YAML I/O (LD6, LD20)
+# ---------------------------------------------------------------------------
+#
+# These functions implement the format 2.1.0 manifest contract: canonical JSON
+# bytes for ``import_id`` and signature computation, exact byte-reproducible
+# payload checksums, generation of the on-disk YAML manifest with the
+# ``source_layout`` hint, and a stdlib-only YAML reader/writer for the manifest
+# subset (no PyYAML dependency, matching v3 main's regex-only approach).
+#
+# The receive pipeline (task .8) and the share CLI wiring (task .7) consume
+# these helpers; this task lands them with their unit tests but does not yet
+# wire them into the user-facing CLI.
+
+# Default minimum plugin version receivers should advertise to senders. Bumped
+# alongside ``FORMAT_VERSION`` whenever the manifest schema changes in a way
+# that older receivers cannot handle. Advisory only.
+MIN_PLUGIN_VERSION = "3.1.0"
+
+# Regex for the receiver-side ``format_version`` accept rule (LD6). Matches
+# ``2.x`` and ``2.x.y`` only; explicitly rejects ``3.x``.
+_FORMAT_VERSION_RE = re.compile(r"^2\.\d+(\.\d+)?$")
+
+# Allowed scopes for the ``scope:`` field (LD20).
+_VALID_SCOPES = ("full", "bundle", "snapshot")
+
+# Allowed values for the ``source_layout:`` field. Receivers tolerate unknown
+# values with a warning (LD7 fall-through), but generators must use one of
+# these two strings explicitly.
+_VALID_SOURCE_LAYOUTS = ("v2", "v3")
+
+# Field order for the on-disk YAML manifest. The canonical (JSON) form
+# re-sorts keys alphabetically; this order is for human readability of the
+# generated YAML only.
+_MANIFEST_FIELD_ORDER = (
+    "format_version",
+    "source_layout",
+    "min_plugin_version",
+    "created",
+    "scope",
+    "source",
+    "sender",
+    "description",
+    "note",
+    "exclusions_applied",
+    "substitutions_applied",
+    "bundles",
+    "payload_sha256",
+    "files",
+    "encryption",
+    "signature",
+)
+
+
+def _validate_safe_string(value, field_name):
+    # type: (Any, str) -> None
+    """Reject free-form strings that would corrupt the hand-rolled YAML emitter.
+
+    The manifest YAML writer below emits single-line scalars only. Newlines,
+    carriage returns, or unescaped double quotes inside ``description``,
+    ``note``, ``sender``, and similar fields would either break the parser on
+    the receive side or, worse, smuggle additional YAML keys into the manifest
+    via injection. Reject them up front with a specific error.
+
+    Backslashes are tolerated; the writer escapes them. Single quotes are
+    tolerated since the writer always uses double quotes for scalars.
+    """
+    if value is None:
+        return
+    if not isinstance(value, str):
+        raise ValueError(
+            "Field '{0}' must be a string, got {1}".format(
+                field_name, type(value).__name__
+            )
+        )
+    if "\n" in value or "\r" in value:
+        raise ValueError(
+            "Field '{0}' must be single-line (no newlines): {1!r}".format(
+                field_name, value
+            )
+        )
+    if '"' in value:
+        raise ValueError(
+            "Field '{0}' must not contain unescaped double quotes: {1!r}. "
+            "Use single quotes or strip the value before passing it in.".format(
+                field_name, value
+            )
+        )
+
+
+def canonical_manifest_bytes(manifest_dict):
+    # type: (Dict[str, Any]) -> bytes
+    """Produce deterministic bytes for ``import_id`` and signature per LD20.
+
+    Algorithm:
+    1. Drop the ``signature`` field (signing is computed over the unsigned
+       canonical form, so re-signing the same content is idempotent).
+    2. Sort all order-sensitive list fields:
+       - ``files`` by ``path``
+       - ``bundles`` lexicographic
+       - ``exclusions_applied`` lexicographic
+       - ``substitutions_applied`` by ``path``
+       Lists not enumerated here are left in their original order; the schema
+       does not currently include any others.
+    3. Serialize via ``json.dumps`` with ``sort_keys=True`` and the strict
+       ``(",", ":")`` separators, then encode UTF-8.
+
+    The ``recipients`` field is intentionally NOT touched: it lives in the
+    separate ``rsa-envelope-v1.json`` (LD21), not in ``manifest.yaml``.
+    Touching it would couple ``import_id`` to encryption envelope contents,
+    which would break the goal of stable identity across re-encryption for
+    different peers.
+
+    The output of this function is the authoritative byte stream that
+    ``import_id`` and the RSA-PSS signature are computed over. Any change to
+    the algorithm is a format version bump.
+    """
+    d = dict(manifest_dict)
+    d.pop("signature", None)
+
+    if "files" in d and isinstance(d["files"], list):
+        d["files"] = sorted(d["files"], key=lambda f: f.get("path", ""))
+    if "bundles" in d and isinstance(d["bundles"], list):
+        d["bundles"] = sorted(d["bundles"])
+    if "exclusions_applied" in d and isinstance(d["exclusions_applied"], list):
+        d["exclusions_applied"] = sorted(d["exclusions_applied"])
+    if "substitutions_applied" in d and isinstance(d["substitutions_applied"], list):
+        d["substitutions_applied"] = sorted(
+            d["substitutions_applied"], key=lambda s: s.get("path", "")
+        )
+
+    return json.dumps(
+        d,
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=False,
+    ).encode("utf-8")
+
+
+def compute_payload_sha256(files):
+    # type: (List[Dict[str, Any]]) -> str
+    """Return the LD20 ``payload_sha256`` hex digest for a ``files[]`` list.
+
+    Construction (exact byte stream, sorted by path so reordering the input
+    list does not change the output):
+
+        for each file in sorted(files, key=path):
+            sha256.update(path_utf8 + NUL + sha256_ascii + NUL + size_decimal_ascii + NL)
+
+    NUL delimiters prevent path-vs-sha ambiguity (no path can contain a NUL
+    byte on POSIX/Windows). The trailing NL prevents cross-entry collisions
+    where two files might otherwise share a boundary (e.g. ``a`` + ``b`` vs
+    ``ab``).
+
+    Receivers recompute this digest from the actual file list and reject the
+    package on mismatch -- this catches manifest-vs-files divergence that
+    per-file checks alone might miss (e.g. a missing entry in the manifest).
+    """
+    sorted_files = sorted(files, key=lambda f: f["path"])
+    h = hashlib.sha256()
+    for f in sorted_files:
+        h.update(f["path"].encode("utf-8"))
+        h.update(b"\x00")
+        h.update(f["sha256"].encode("ascii"))
+        h.update(b"\x00")
+        h.update(str(f["size"]).encode("ascii"))
+        h.update(b"\n")
+    return h.hexdigest()
+
+
+def _walk_staging_files(staging_dir):
+    # type: (str) -> List[Dict[str, Any]]
+    """Walk a staging directory and return ``files[]`` entries per LD20.
+
+    Each entry is ``{"path": <posix>, "sha256": <hex>, "size": <int>}``. The
+    ``manifest.yaml`` itself (if it happens to exist already) is excluded --
+    the manifest cannot list its own checksum because writing the manifest
+    changes its contents. Directory members are skipped; only regular files
+    are hashed.
+
+    Paths are POSIX-normalized so the manifest is portable across operating
+    systems with different native separators.
+    """
+    staging_dir = os.path.abspath(staging_dir)
+    entries = []  # type: List[Dict[str, Any]]
+    for root, _dirs, files in os.walk(staging_dir):
+        for fname in files:
+            full = os.path.join(root, fname)
+            if not os.path.isfile(full) or os.path.islink(full):
+                # Skip symlinks even if they point at regular files: tar safety
+                # forbids symlinks in packages, and including a symlink in the
+                # manifest would let a malicious sender pre-claim a path that
+                # later resolves to something else on the receiver.
+                continue
+            rel = os.path.relpath(full, staging_dir).replace(os.sep, "/")
+            if rel == "manifest.yaml":
+                continue
+            entries.append({
+                "path": rel,
+                "sha256": sha256_file(full),
+                "size": os.path.getsize(full),
+            })
+    return entries
+
+
+def generate_manifest(
+    staging_dir,
+    scope,
+    walnut_name,
+    bundles=None,
+    description="",
+    note="",
+    session_id="",
+    engine="",
+    plugin_version="3.1.0",
+    sender="unknown",
+    exclusions_applied=None,
+    substitutions_applied=None,
+    source_layout="v3",
+    min_plugin_version=None,
+    created=None,
+):
+    # type: (str, str, str, Optional[List[str]], str, str, str, str, str, str, Optional[List[str]], Optional[List[Dict[str, Any]]], str, Optional[str], Optional[str]) -> Dict[str, Any]
+    """Generate a v3 manifest for a staged package and write it to disk.
+
+    Walks the staging tree, computes per-file SHA-256 + size, builds the
+    manifest dict per the LD20 schema, and writes it to
+    ``{staging_dir}/manifest.yaml`` via the hand-rolled stdlib YAML emitter.
+    Returns the manifest dict for callers that need to compute ``import_id``
+    or sign it.
+
+    The manifest's ``encryption`` field defaults to ``"none"``; the encrypt
+    pipeline (task .7+) overwrites it after wrapping the payload. The
+    ``signature`` field is intentionally absent; the sign pipeline appends it
+    after canonicalization.
+
+    Parameters:
+        staging_dir: absolute path to the staging directory (already populated
+            by ``_stage_files``)
+        scope: ``"full"``, ``"bundle"``, or ``"snapshot"``
+        walnut_name: human-readable walnut identifier (basename of the source
+            walnut directory, normally)
+        bundles: required when ``scope == "bundle"``; ignored otherwise
+        description: short single-line description for the package preview
+        note: optional personal note (single-line)
+        session_id, engine, plugin_version: ``source:`` block fields per LD20
+        sender: GitHub-style handle for the originator (LD23 signer model)
+        exclusions_applied: glob patterns the sender used to omit files
+            entirely from the package (audit trail per LD11)
+        substitutions_applied: list of ``{"path": ..., "reason": ...}`` dicts
+            for files present in the package but stubbed (LD9 baseline stubs
+            and user-specified substitutions)
+        source_layout: ``"v2"`` or ``"v3"``; defaults to ``"v3"``
+        min_plugin_version: receiver advisory; defaults to ``MIN_PLUGIN_VERSION``
+        created: override ISO timestamp; defaults to ``now_utc_iso()``
+    """
+    if scope not in _VALID_SCOPES:
+        raise ValueError(
+            "Unknown scope '{0}'; expected one of {1}".format(scope, _VALID_SCOPES)
+        )
+    if source_layout not in _VALID_SOURCE_LAYOUTS:
+        raise ValueError(
+            "Unknown source_layout '{0}'; expected one of {1}".format(
+                source_layout, _VALID_SOURCE_LAYOUTS
+            )
+        )
+    if scope == "bundle" and not bundles:
+        raise ValueError(
+            "scope=bundle requires a non-empty bundles list"
+        )
+
+    # Validate free-form fields up front so we never produce a malformed YAML
+    # that the receiver would reject.
+    _validate_safe_string(description, "description")
+    _validate_safe_string(note, "note")
+    _validate_safe_string(walnut_name, "source.walnut")
+    _validate_safe_string(session_id, "source.session_id")
+    _validate_safe_string(engine, "source.engine")
+    _validate_safe_string(plugin_version, "source.plugin_version")
+    _validate_safe_string(sender, "sender")
+
+    staging_dir = os.path.abspath(staging_dir)
+    if not os.path.isdir(staging_dir):
+        raise FileNotFoundError(
+            "staging directory not found: {0}".format(staging_dir)
+        )
+
+    files_list = _walk_staging_files(staging_dir)
+    payload_sha = compute_payload_sha256(files_list)
+
+    if min_plugin_version is None:
+        min_plugin_version = MIN_PLUGIN_VERSION
+    if created is None:
+        created = now_utc_iso()
+    _validate_safe_string(min_plugin_version, "min_plugin_version")
+    _validate_safe_string(created, "created")
+
+    manifest = {
+        "format_version": FORMAT_VERSION,
+        "source_layout": source_layout,
+        "min_plugin_version": min_plugin_version,
+        "created": created,
+        "scope": scope,
+        "source": {
+            "walnut": walnut_name,
+            "session_id": session_id,
+            "engine": engine,
+            "plugin_version": plugin_version,
+        },
+        "sender": sender,
+        "description": description,
+        "note": note,
+        "exclusions_applied": list(exclusions_applied or []),
+        "substitutions_applied": [dict(s) for s in (substitutions_applied or [])],
+        "payload_sha256": payload_sha,
+        "files": files_list,
+        "encryption": "none",
+    }  # type: Dict[str, Any]
+
+    # ``bundles`` only appears for scope=bundle. Snapshot/full omit the field
+    # entirely so the canonical bytes do not include an empty list.
+    if scope == "bundle":
+        manifest["bundles"] = list(bundles or [])
+
+    # Defensive substitution string validation -- callers may pass arbitrary
+    # reasons that should not break the YAML.
+    for entry in manifest["substitutions_applied"]:
+        _validate_safe_string(entry.get("path", ""), "substitutions_applied.path")
+        _validate_safe_string(entry.get("reason", ""), "substitutions_applied.reason")
+    for excl in manifest["exclusions_applied"]:
+        _validate_safe_string(excl, "exclusions_applied[]")
+
+    # Write the manifest to disk LAST, so any validation error above leaves
+    # the staging directory unchanged.
+    write_manifest_yaml(manifest, os.path.join(staging_dir, "manifest.yaml"))
+    return manifest
+
+
+def validate_manifest(manifest):
+    # type: (Dict[str, Any]) -> Tuple[bool, List[str]]
+    """Validate a parsed manifest dict against the LD6 + LD20 contract.
+
+    Returns ``(ok, errors)``. ``ok`` is True iff every required field is
+    present, ``format_version`` matches the ``2.x`` regex, ``scope`` is one of
+    the three known values, and per-scope rules pass (``bundle`` requires a
+    non-empty ``bundles`` list, ``source_layout`` if present must be ``v2`` or
+    ``v3`` -- but unknown values are warnings, not hard errors, per LD7 rule
+    6 fall-through).
+
+    Hard-fails:
+    - ``format_version`` starts with ``3.`` -> the package was produced by a
+      newer plugin and the receiver cannot guarantee correct interpretation
+    - any required field missing
+    - ``scope`` not in ``{full, bundle, snapshot}``
+    - ``bundle`` scope with empty / missing ``bundles`` list
+    - ``files`` not a list, or any file entry missing required keys
+    """
+    errors = []  # type: List[str]
+
+    if not isinstance(manifest, dict):
+        return (False, ["manifest must be a dict, got {0}".format(
+            type(manifest).__name__
+        )])
+
+    # Required fields per LD20.
+    required = ("format_version", "scope", "created", "files", "source",
+                "payload_sha256")
+    for field in required:
+        if field not in manifest:
+            errors.append("missing required field: {0}".format(field))
+
+    # If we are missing the format version we cannot meaningfully continue.
+    fv = manifest.get("format_version")
+    if fv is not None:
+        if not isinstance(fv, str):
+            errors.append(
+                "format_version must be a string, got {0}".format(
+                    type(fv).__name__
+                )
+            )
+        else:
+            if fv.startswith("3."):
+                errors.append(
+                    "Package uses format_version {0}; this receiver only "
+                    "supports 2.x. Upgrade the ALIVE plugin or request an "
+                    "older sender.".format(fv)
+                )
+            elif not _FORMAT_VERSION_RE.match(fv):
+                errors.append(
+                    "Unsupported format_version '{0}'; expected 2.x".format(fv)
+                )
+
+    scope = manifest.get("scope")
+    if scope is not None and scope not in _VALID_SCOPES:
+        errors.append(
+            "Invalid scope '{0}'; expected one of {1}".format(scope, _VALID_SCOPES)
+        )
+
+    if scope == "bundle":
+        bundles = manifest.get("bundles")
+        if not bundles or not isinstance(bundles, list):
+            errors.append(
+                "scope=bundle requires a non-empty bundles list"
+            )
+
+    # source_layout: tolerate unknown for forward compat; LD7 inference will
+    # take over on the receive side.
+    sl = manifest.get("source_layout")
+    if sl is not None and sl not in _VALID_SOURCE_LAYOUTS:
+        # Warning only -- not appended to errors. We could surface it via a
+        # second return value, but the LD7 fall-through already handles
+        # unknown layouts on the receive side.
+        pass
+
+    # Validate the files[] entries shape.
+    files_field = manifest.get("files")
+    if files_field is not None:
+        if not isinstance(files_field, list):
+            errors.append("files must be a list")
+        else:
+            for i, entry in enumerate(files_field):
+                if not isinstance(entry, dict):
+                    errors.append(
+                        "files[{0}] must be a dict, got {1}".format(
+                            i, type(entry).__name__
+                        )
+                    )
+                    continue
+                for key in ("path", "sha256", "size"):
+                    if key not in entry:
+                        errors.append(
+                            "files[{0}] missing required key '{1}'".format(i, key)
+                        )
+
+    # source: must be a dict if present (we already required it above).
+    src = manifest.get("source")
+    if src is not None and not isinstance(src, dict):
+        errors.append(
+            "source must be a dict, got {0}".format(type(src).__name__)
+        )
+
+    return (len(errors) == 0, errors)
+
+
+# ---------------------------------------------------------------------------
+# Stdlib-only manifest YAML reader / writer (LD20)
+# ---------------------------------------------------------------------------
+#
+# The hand-rolled writer emits the exact subset of YAML the manifest schema
+# uses: string scalars (always double-quoted for safety), string lists, one
+# level of nested dicts (``source``, ``signature``), and a list of dicts
+# (``files``, ``substitutions_applied``). No multi-line block style, no
+# anchors, no flow style. Keys are emitted in ``_MANIFEST_FIELD_ORDER``; any
+# unknown keys are appended in alphabetical order so forward-compat fields
+# survive a round-trip.
+#
+# The reader is a regex-driven line scanner that handles the same subset and
+# tolerates unknown top-level scalar fields (preserved in the dict for
+# forward compat). Anything outside the subset raises ``ValueError`` so the
+# parser cannot silently mis-parse a malformed file.
+
+def _yaml_quote(value):
+    # type: (str) -> str
+    """Quote a string for the YAML writer (always double quotes).
+
+    Backslashes and double quotes are escaped. Newlines are forbidden by
+    ``_validate_safe_string`` upstream, but the escape is included for
+    defence in depth.
+    """
+    if value is None:
+        return '""'
+    s = str(value)
+    s = s.replace("\\", "\\\\").replace('"', '\\"').replace("\n", "\\n").replace("\r", "\\r")
+    return '"{0}"'.format(s)
+
+
+def _emit_scalar(key, value, indent):
+    # type: (str, Any, int) -> str
+    """Emit a single ``key: value`` line for the YAML writer."""
+    pad = " " * indent
+    if isinstance(value, bool):
+        return "{0}{1}: {2}\n".format(pad, key, "true" if value else "false")
+    if isinstance(value, (int, float)):
+        return "{0}{1}: {2}\n".format(pad, key, value)
+    if value is None:
+        return "{0}{1}: \"\"\n".format(pad, key)
+    return "{0}{1}: {2}\n".format(pad, key, _yaml_quote(value))
+
+
+def _emit_string_list(key, items, indent):
+    # type: (str, List[Any], int) -> str
+    """Emit ``key:`` followed by ``- item`` lines for a list of scalars.
+
+    Empty lists serialize as ``key: []`` so the field is preserved across a
+    round trip without ambiguity.
+    """
+    pad = " " * indent
+    if not items:
+        return "{0}{1}: []\n".format(pad, key)
+    out = "{0}{1}:\n".format(pad, key)
+    for item in items:
+        out += "{0}  - {1}\n".format(pad, _yaml_quote(item))
+    return out
+
+
+def _emit_dict_block(key, d, indent):
+    # type: (str, Dict[str, Any], int) -> str
+    """Emit a nested dict block (one level only).
+
+    Used for ``source:``, ``signature:``, and any other future single-level
+    nested dict. Keys are emitted in alphabetical order for stability.
+    """
+    pad = " " * indent
+    out = "{0}{1}:\n".format(pad, key)
+    for k in sorted(d.keys()):
+        out += _emit_scalar(k, d[k], indent + 2)
+    return out
+
+
+def _emit_list_of_dicts(key, items, indent):
+    # type: (str, List[Dict[str, Any]], int) -> str
+    """Emit a list of dicts (e.g. ``files:`` and ``substitutions_applied:``).
+
+    Each item is emitted as a ``- key: value`` block. Keys within an item are
+    emitted in a fixed order: ``path`` first, then alphabetical for the rest
+    so the path is the visual anchor for each entry.
+    """
+    pad = " " * indent
+    if not items:
+        return "{0}{1}: []\n".format(pad, key)
+    out = "{0}{1}:\n".format(pad, key)
+    for item in items:
+        keys = list(item.keys())
+        if "path" in keys:
+            keys.remove("path")
+            keys = ["path"] + sorted(keys)
+        else:
+            keys = sorted(keys)
+        first = True
+        for k in keys:
+            if first:
+                out += "{0}  - {1}: {2}\n".format(
+                    pad, k, _yaml_quote(item[k]) if isinstance(item[k], str)
+                    else item[k]
+                )
+                first = False
+            else:
+                out += "{0}    {1}: {2}\n".format(
+                    pad, k, _yaml_quote(item[k]) if isinstance(item[k], str)
+                    else item[k]
+                )
+    return out
+
+
+def write_manifest_yaml(manifest_dict, output_path):
+    # type: (Dict[str, Any], str) -> None
+    """Serialize a manifest dict to YAML and write it atomically.
+
+    Field order follows ``_MANIFEST_FIELD_ORDER`` for the known fields and
+    appends any unknown top-level fields in alphabetical order so forward-
+    compat additions survive a round trip.
+
+    The writer dispatches per field type:
+    - ``source`` and ``signature`` -> nested dict block
+    - ``exclusions_applied`` and ``bundles`` -> string list
+    - ``substitutions_applied`` and ``files`` -> list of dicts
+    - everything else -> scalar
+    """
+    output_path = os.path.abspath(output_path)
+    os.makedirs(os.path.dirname(output_path), exist_ok=True)
+
+    out = ""
+    written = set()
+    known_order = list(_MANIFEST_FIELD_ORDER)
+    extra_fields = sorted(
+        k for k in manifest_dict.keys() if k not in known_order
+    )
+    for key in known_order + extra_fields:
+        if key not in manifest_dict:
+            continue
+        val = manifest_dict[key]
+        if key in ("source", "signature"):
+            if isinstance(val, dict):
+                out += _emit_dict_block(key, val, 0)
+            else:
+                out += _emit_scalar(key, val, 0)
+        elif key in ("exclusions_applied", "bundles"):
+            if isinstance(val, list):
+                out += _emit_string_list(key, val, 0)
+            else:
+                out += _emit_scalar(key, val, 0)
+        elif key in ("substitutions_applied", "files"):
+            if isinstance(val, list):
+                out += _emit_list_of_dicts(key, val, 0)
+            else:
+                out += _emit_scalar(key, val, 0)
+        else:
+            out += _emit_scalar(key, val, 0)
+        written.add(key)
+
+    # Atomic write so a crash mid-write does not leave a half-manifest behind.
+    fd, tmp_path = tempfile.mkstemp(
+        dir=os.path.dirname(output_path), suffix=".tmp"
+    )
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(out)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp_path, output_path)
+    except BaseException:
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+        raise
+
+
+def _yaml_unquote_strict(val):
+    # type: (str) -> Any
+    """Decode a single YAML scalar produced by the writer.
+
+    Handles double-quoted strings (with backslash escapes), single-quoted
+    strings, integer literals, float literals, ``true``/``false``, and bare
+    strings. Used by ``read_manifest_yaml`` only.
+    """
+    if val == "" or val == "[]":
+        return val
+    if val.startswith('"') and val.endswith('"') and len(val) >= 2:
+        s = val[1:-1]
+        # Decode escapes in reverse order of how they were applied.
+        s = s.replace("\\r", "\r").replace("\\n", "\n").replace('\\"', '"').replace("\\\\", "\\")
+        return s
+    if val.startswith("'") and val.endswith("'") and len(val) >= 2:
+        return val[1:-1]
+    lower = val.lower()
+    if lower == "true":
+        return True
+    if lower == "false":
+        return False
+    if lower in ("null", "~"):
+        return None
+    # Try int, then float, then bare string.
+    try:
+        return int(val)
+    except ValueError:
+        pass
+    try:
+        return float(val)
+    except ValueError:
+        pass
+    return val
+
+
+def read_manifest_yaml(path):
+    # type: (str) -> Dict[str, Any]
+    """Parse a manifest YAML file (written by ``write_manifest_yaml``).
+
+    The parser handles the exact subset the writer emits:
+    - Top-level scalar lines (``key: value``)
+    - Top-level ``key:`` followed by indented ``- item`` lines (string list)
+    - Top-level ``key:`` followed by indented ``key: value`` pairs (nested
+      dict, one level only)
+    - Top-level ``key:`` followed by indented ``- key: value`` blocks (list
+      of dicts)
+    - ``key: []`` for empty lists
+
+    Unknown top-level scalar fields are preserved in the result dict so
+    forward-compat additions survive a round trip. Anything that does not
+    match the subset raises ``ValueError`` -- silent mis-parsing would be
+    worse than failing fast.
+    """
+    path = os.path.abspath(path)
+    if not os.path.isfile(path):
+        raise FileNotFoundError("manifest not found: {0}".format(path))
+
+    with open(path, "r", encoding="utf-8") as f:
+        content = f.read()
+
+    # Strip trailing newline so the line counter is exact.
+    lines = content.split("\n")
+    if lines and lines[-1] == "":
+        lines.pop()
+
+    result = {}  # type: Dict[str, Any]
+    i = 0
+    n = len(lines)
+
+    top_kv_re = re.compile(r"^([A-Za-z_][A-Za-z0-9_]*):\s*(.*)$")
+    indented_dash_kv_re = re.compile(r"^(\s+)-\s+([A-Za-z_][A-Za-z0-9_]*):\s*(.*)$")
+    indented_dash_scalar_re = re.compile(r"^(\s+)-\s+(.*)$")
+    indented_kv_re = re.compile(r"^(\s+)([A-Za-z_][A-Za-z0-9_]*):\s*(.*)$")
+
+    while i < n:
+        line = lines[i]
+        if line.strip() == "" or line.lstrip().startswith("#"):
+            i += 1
+            continue
+
+        m = top_kv_re.match(line)
+        if not m:
+            raise ValueError(
+                "Malformed manifest line {0}: {1!r}".format(i + 1, line)
+            )
+
+        key = m.group(1)
+        raw_val = m.group(2).strip()
+
+        if raw_val == "[]":
+            result[key] = []
+            i += 1
+            continue
+
+        if raw_val == "":
+            # Block follows: nested dict OR list (string list / list of dicts).
+            j = i + 1
+            block_lines = []  # type: List[str]
+            while j < n:
+                nxt = lines[j]
+                if nxt.strip() == "":
+                    block_lines.append(nxt)
+                    j += 1
+                    continue
+                # Indented? Then it belongs to this block.
+                if nxt[:1] in (" ", "\t"):
+                    block_lines.append(nxt)
+                    j += 1
+                    continue
+                break
+
+            if not block_lines or all(b.strip() == "" for b in block_lines):
+                # Empty block -> empty value (treat as empty string).
+                result[key] = ""
+                i = j
+                continue
+
+            # Decide block type from the first non-blank child.
+            first_nonblank = next(b for b in block_lines if b.strip() != "")
+            stripped = first_nonblank.lstrip()
+            if stripped.startswith("- "):
+                # Either a string list or a list of dicts.
+                # Inspect: is the first dash followed by ``word:`` or by a
+                # bare scalar?
+                dash_kv = indented_dash_kv_re.match(first_nonblank)
+                if dash_kv:
+                    # List of dicts.
+                    items = _parse_list_of_dicts_block(block_lines, key, i)
+                    result[key] = items
+                else:
+                    items = []  # type: List[Any]
+                    for b in block_lines:
+                        if b.strip() == "":
+                            continue
+                        dm = indented_dash_scalar_re.match(b)
+                        if not dm:
+                            raise ValueError(
+                                "Malformed list item in '{0}' block: {1!r}".format(
+                                    key, b
+                                )
+                            )
+                        items.append(_yaml_unquote_strict(dm.group(2).strip()))
+                    result[key] = items
+            else:
+                # Nested dict block.
+                nested = {}  # type: Dict[str, Any]
+                for b in block_lines:
+                    if b.strip() == "":
+                        continue
+                    km = indented_kv_re.match(b)
+                    if not km:
+                        raise ValueError(
+                            "Malformed nested dict line in '{0}' block: {1!r}".format(
+                                key, b
+                            )
+                        )
+                    nested[km.group(2)] = _yaml_unquote_strict(km.group(3).strip())
+                result[key] = nested
+
+            i = j
+            continue
+
+        # Inline scalar.
+        result[key] = _yaml_unquote_strict(raw_val)
+        i += 1
+
+    return result
+
+
+def _parse_list_of_dicts_block(block_lines, parent_key, start_index):
+    # type: (List[str], str, int) -> List[Dict[str, Any]]
+    """Parse a list-of-dicts block produced by ``_emit_list_of_dicts``.
+
+    Each entry begins with ``  - key: value`` and is followed by zero or more
+    ``    key: value`` continuation lines (deeper indent). The function
+    builds a list of dicts and raises ``ValueError`` on any line that does
+    not match the expected pattern.
+    """
+    items = []  # type: List[Dict[str, Any]]
+    current = None  # type: Optional[Dict[str, Any]]
+    dash_re = re.compile(r"^(\s+)-\s+([A-Za-z_][A-Za-z0-9_]*):\s*(.*)$")
+    cont_re = re.compile(r"^(\s+)([A-Za-z_][A-Za-z0-9_]*):\s*(.*)$")
+
+    dash_indent = None  # type: Optional[int]
+
+    for raw in block_lines:
+        if raw.strip() == "":
+            continue
+        dash = dash_re.match(raw)
+        if dash:
+            if current is not None:
+                items.append(current)
+            indent_len = len(dash.group(1))
+            if dash_indent is None:
+                dash_indent = indent_len
+            elif indent_len != dash_indent:
+                raise ValueError(
+                    "Inconsistent dash indent in '{0}' list (line {1})".format(
+                        parent_key, start_index + 1
+                    )
+                )
+            current = {dash.group(2): _yaml_unquote_strict(dash.group(3).strip())}
+            continue
+        cont = cont_re.match(raw)
+        if cont and current is not None:
+            indent_len = len(cont.group(1))
+            if dash_indent is None or indent_len <= dash_indent:
+                raise ValueError(
+                    "Continuation line not deeper than dash in '{0}' list "
+                    "(line {1}): {2!r}".format(
+                        parent_key, start_index + 1, raw
+                    )
+                )
+            current[cont.group(2)] = _yaml_unquote_strict(cont.group(3).strip())
+            continue
+        raise ValueError(
+            "Malformed entry in '{0}' list (line {1}): {2!r}".format(
+                parent_key, start_index + 1, raw
+            )
+        )
+
+    if current is not None:
+        items.append(current)
+    return items
 
 
 # ---------------------------------------------------------------------------
