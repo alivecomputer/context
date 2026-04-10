@@ -1,0 +1,13 @@
+name: alive
+version: 0.2.0
+description: "ALIVE Context System -- file-based personal context manager. Structured walnuts (projects, people, knowledge) with smart prefetch, zero dependencies, fully local."
+author: "Ben Flint (@stackwalnuts)"
+license: MIT
+url: "https://github.com/alivecontext/alive"
+pip_dependencies: []
+hooks:
+  - on_turn_start
+  - on_session_end
+  - on_pre_compress
+  - on_memory_write
+  - on_delegation
