@@ -61,7 +61,7 @@ hermes cron create \
 
 hermes cron create \
   --schedule "0 2 * * *" \
-  --prompt "Run the alive-mine-cron skill. Scan recent session transcripts for context." \
+  --prompt "Run the alive-mine skill. Scan recent session transcripts for context." \
   --name "ALIVE Nightly Mine" \
   --skill alive-mine \
   --deliver local && echo "  [+] alive-mine (2am nightly, local)" || echo "  [!] alive-mine failed"
