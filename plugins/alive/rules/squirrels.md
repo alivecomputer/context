@@ -463,6 +463,7 @@ runtime_id: squirrel.core@3.0
 engine: claude-opus-4-6
 squirrel_name: Toby
 walnut: nova-station
+topic: "nova-station/shielding-review"
 started: 2026-03-28T12:00:00
 ended: 2026-03-28T14:00:00
 signed: true
@@ -490,6 +491,24 @@ working:
 Entries accumulate. They're tiny and scannable. Don't archive them.
 
 `squirrel_name` records which persona was active. `recovery_state` is a human-readable sentence describing exactly where work stopped — the first thing the next session reads if this entry is unsigned.
+
+### Conversation Topic
+
+`topic:` is the conversation name shown in the statusline. Laconic — two or three words max. The squirrel maintains it by writing to the squirrel YAML via Bash (`sed`).
+
+**When to set it:**
+- **Walnut loaded:** set to the walnut name (e.g., `nova-station`)
+- **Bundle focused:** set to `walnut/bundle` (e.g., `nova-station/shielding-review`)
+- **Topic shifts:** if the conversation moves to a different walnut or substantially different work, update it
+- **No walnut:** set a short descriptor (e.g., `roadmap`, `morning review`, `debugging hooks`)
+
+**How to write it:**
+
+```bash
+sed -i '' "s/^topic:.*/topic: nova-station\/shielding-review/" "$WORLD_ROOT/.alive/_squirrels/$SESSION_ID.yaml"
+```
+
+Keep it short. The statusline has limited space. `alivecomputer/hermes-plugin` is fine. `working on the hermes plugin integration for the alive computer product` is not.
 
 ---
 

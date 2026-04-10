@@ -110,6 +110,7 @@ session_id: $SESSION_ID
 runtime_id: squirrel.core@1.0
 engine: $HOOK_MODEL
 walnut: null
+topic: null
 started: $TIMESTAMP
 ended: null
 saves: 0

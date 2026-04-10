@@ -152,9 +152,14 @@ fi
 
 # ── WORKING STATUSLINE ──
 
-# Detect active walnut from squirrel YAML
+# Detect conversation topic and active walnut from squirrel YAML
 ACTIVE_WALNUT=""
+TOPIC=""
 if [ -f "$ENTRY" ]; then
+  TOPIC=$(grep '^topic:' "$ENTRY" 2>/dev/null | sed 's/topic: *//' | sed 's/^"//;s/"$//')
+  if [ "$TOPIC" = "null" ] || [ -z "$TOPIC" ]; then
+    TOPIC=""
+  fi
   # Check walnut: field first (set by save), then repo_context: (set by repo detection)
   ACTIVE_WALNUT=$(grep '^walnut:' "$ENTRY" 2>/dev/null | sed 's/walnut: *//' | tr -d ' ')
   if [ "$ACTIVE_WALNUT" = "null" ] || [ -z "$ACTIVE_WALNUT" ]; then
@@ -162,8 +167,11 @@ if [ -f "$ENTRY" ]; then
   fi
 fi
 
+# Topic takes priority over raw walnut name
 WALNUT_DISPLAY=""
-if [ -n "$ACTIVE_WALNUT" ]; then
+if [ -n "$TOPIC" ]; then
+  WALNUT_DISPLAY=" ${DIM}|${RESET} ${GREEN}${TOPIC}${RESET}"
+elif [ -n "$ACTIVE_WALNUT" ]; then
   WALNUT_DISPLAY=" ${DIM}|${RESET} ${GREEN}${ACTIVE_WALNUT}${RESET}"
 fi
 
