@@ -84,7 +84,7 @@ When no active bundle matches the current work:
 ```
 
 5. Read `templates/bundle/context.manifest.yaml`
-6. Fill placeholders: `{{goal}}`, `{{date}}`, `{{session_id}}`, `{{type}}`
+6. Fill placeholders: `{{name}}`, `{{goal}}`, `{{species}}`, `{{sensitivity}}`, `{{date}}`, `{{session_id}}`
 7. Create `{walnut}/{name}/context.manifest.yaml`
 8. Create `{walnut}/{name}/raw/` (empty directory)
 9. Note: `project.py` will pick up the new bundle on next save — no manual now.json update needed
@@ -103,25 +103,29 @@ Every bundle has a `context.manifest.yaml` at its root. This is the bundle's ide
 
 ```yaml
 name: shielding-review
-type: outcome              # outcome | evergreen
 goal: "Evaluate radiation shielding vendors for habitat module"
-status: draft              # draft | prototype | published | done | active | maintaining
+species: outcome           # outcome | evergreen
+phase: draft               # draft | prototype | published | done | active | maintaining
+sensitivity: normal        # normal | private | shared
+version: "0.1"
 created: 2026-03-28
 session: abc123
-
-sensitivity: normal        # normal | private | shared
-shared: []
-discovered: {}
-
 parent_bundle:             # name of parent bundle, if nested
+
 tags: []
 people: []
-sources: []
+shared: []
+context_routes: []         # list of captured source file entries
+discovered:                # mining extraction state
+  status: none
+  last_mined:
+  processed: []
+  unprocessed: []
 ```
 
 **Key fields:**
-- `type` — outcome or evergreen. Drives lifecycle behavior.
-- `status` — outcome bundles: draft -> prototype -> published -> done. Evergreen bundles: active <-> maintaining.
+- `species` — outcome or evergreen. Drives lifecycle behavior.
+- `phase` — outcome bundles: draft -> prototype -> published -> done. Evergreen bundles: active <-> maintaining.
 - `sensitivity` — controls sharing and export behavior:
   - `normal` — can be shared freely
   - `private` — excluded from walnut.world publishing, flagged on share attempts

@@ -1,10 +1,14 @@
-name:
-outcome:
-species: outcome  # outcome | evergreen
+---
+name: "{{name}}"
+goal: "{{goal}}"
+species: "{{species}}"  # outcome | evergreen
 phase: draft  # draft | prototype | published | done
-sensitivity: private  # open | private | restricted
-version: 0.1
+sensitivity: "{{sensitivity}}"  # open | private | restricted
+version: "0.1"
 due:  # optional — ISO date. Bundle-scoped tasks can inherit this deadline.
+created: "{{date}}"
+session: "{{session_id}}"
+parent_bundle:
 
 description:
 author:
@@ -17,21 +21,22 @@ installs:
   hooks: []
   templates: []
 
+people: []
+shared: []
+
 tasks_total: 0
 tasks_done: 0
 tasks_created:
 
-context_routes:
-  people: true
-  insights: true
-  decisions: true
+context_routes: []
 
 discovered:
-  people: []
-  links: []
-  passes: 0
-  last_pass:
+  status: none
+  last_mined:
+  processed: []
+  unprocessed: []
 
 observations: []
 
 creates: []
+---
