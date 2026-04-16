@@ -357,6 +357,13 @@ class EnvelopeErrorShapeTests(unittest.TestCase):
         resp = envelope.error("ERR_WALNUT_NOT_FOUND", walnut="nova-station")
         self.assertEqual(resp["structuredContent"]["error"], "WALNUT_NOT_FOUND")
 
+    def test_error_accepts_wire_form_without_err_prefix(self) -> None:
+        """Callers echoing ``structuredContent['error']`` back (wire form)."""
+        resp = envelope.error("WALNUT_NOT_FOUND", walnut="nova-station")
+        self.assertEqual(resp["structuredContent"]["error"], "WALNUT_NOT_FOUND")
+        # The codebook lookup succeeded, so the message is formatted.
+        self.assertIn("nova-station", resp["structuredContent"]["message"])
+
     def test_error_code_strips_err_prefix(self) -> None:
         """Surface ``error`` field drops ``ERR_`` per Merge/Workato convention."""
         resp = envelope.error(
@@ -387,14 +394,20 @@ class EnvelopeErrorShapeTests(unittest.TestCase):
         self.assertEqual(parsed, resp["structuredContent"])
 
     def test_error_missing_template_placeholder_degrades_gracefully(self) -> None:
-        """Missing kwarg for a referenced placeholder must not crash."""
+        """Missing kwarg for a referenced placeholder must not crash.
+
+        Degrades to the unformatted template — the envelope does NOT
+        surface the offending placeholder name (internal detail).
+        """
         # ERR_TOOL_TIMEOUT expects ``{tool}`` and ``{timeout_s}`` —
         # supply neither and confirm we get a well-formed envelope.
         resp = envelope.error(errors.ErrorCode.ERR_TOOL_TIMEOUT)
         self.assertTrue(resp["isError"])
-        self.assertIn(
-            "template missing placeholder", resp["structuredContent"]["message"]
-        )
+        # The unformatted template shows through.
+        self.assertIn("{tool}", resp["structuredContent"]["message"])
+        # Internal detail stays out.
+        self.assertNotIn("missing placeholder", resp["structuredContent"]["message"])
+        self.assertNotIn("KeyError", resp["structuredContent"]["message"])
 
     def test_error_format_spec_mismatch_degrades_gracefully(self) -> None:
         """Passing a non-numeric for a ``{x:.1f}`` slot must not crash.
@@ -408,9 +421,12 @@ class EnvelopeErrorShapeTests(unittest.TestCase):
             errors.ErrorCode.ERR_TOOL_TIMEOUT, tool="search", timeout_s="not-a-float"
         )
         self.assertTrue(resp["isError"])
-        self.assertIn("template formatting error", resp["structuredContent"]["message"])
-        # The raw exception string must NOT be in the message.
+        # Degrades to the unformatted template.
+        self.assertIn("{timeout_s", resp["structuredContent"]["message"])
+        # Raw exception string + internal detail stay out.
         self.assertNotIn("not-a-float", resp["structuredContent"]["message"])
+        self.assertNotIn("formatting error", resp["structuredContent"]["message"])
+        self.assertNotIn("ValueError", resp["structuredContent"]["message"])
 
     def test_error_unknown_code_returns_unknown_envelope(self) -> None:
         """Unknown codes degrade to a well-formed ``UNKNOWN`` envelope."""

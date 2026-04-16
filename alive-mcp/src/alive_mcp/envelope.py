@@ -179,10 +179,21 @@ def _normalize_code(
         return code.wire, code
 
     if isinstance(code, str):
+        enum_code: Optional[errors.ErrorCode]
         try:
             enum_code = errors.ErrorCode(code)
         except ValueError:
-            enum_code = None
+            # Try the wire form (prefix missing): ``"WALNUT_NOT_FOUND"``
+            # -> ``ErrorCode.ERR_WALNUT_NOT_FOUND``. Callers that copy
+            # the short code from ``structuredContent['error']`` back
+            # into a call will hit this path.
+            if not code.startswith("ERR_"):
+                try:
+                    enum_code = errors.ErrorCode(f"ERR_{code}")
+                except ValueError:
+                    enum_code = None
+            else:
+                enum_code = None
         short = (
             code.removeprefix("ERR_") if code.startswith("ERR_") else (code or "UNKNOWN")
         )
@@ -243,20 +254,15 @@ def error(code: errors.CodeLike, **template_kwargs: Any) -> dict[str, Any]:
         short_code = enum_code.wire  # type: ignore[union-attr]
         try:
             message = spec.message.format(**template_kwargs)
-        except KeyError as missing_key:
-            # Template referenced a placeholder the caller didn't pass.
-            # Don't crash — fall back to the unformatted template so the
-            # user still sees something useful, and include a hint at
-            # which placeholder was missing so the bug is visible in
-            # logs. The envelope is never the failure site.
-            message = spec.message + f" (template missing placeholder: {missing_key})"
-        except (ValueError, TypeError, IndexError):
-            # Format-spec mismatch (e.g. ``{timeout_s:.1f}`` with a
-            # non-numeric kwarg, or a malformed spec). Degrade to the
-            # unformatted template — NEVER surface the raw exception
-            # string, that would defeat mask_error_details=True. The
-            # envelope is never the failure site.
-            message = spec.message + " (template formatting error)"
+        except (KeyError, ValueError, TypeError, IndexError):
+            # Any format failure — missing placeholder, spec mismatch
+            # (``{timeout_s:.1f}`` with a non-numeric kwarg), or a
+            # malformed spec — degrades to the unformatted template.
+            # We do NOT surface the offending placeholder name or the
+            # raw exception string: both count as internal detail that
+            # the mask_error_details=True promise forbids leaking. The
+            # audit log (T12) is the right channel for debug info.
+            message = spec.message
         suggestions = spec.suggestions
 
     structured: dict[str, Any] = {
