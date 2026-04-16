@@ -291,9 +291,14 @@ def parse_log_entries(path: str, walnut: str) -> List[LogEntry]:
     prepend-only invariant of the log (top of file = newest) and
     do not reverse the list.
 
-    Missing file returns an empty list. Permission / decode errors
-    propagate as the usual exceptions so the caller can map them to
-    ``ERR_PERMISSION_DENIED`` envelope shapes.
+    Missing file returns an empty list (including the TOCTOU case
+    where the file existed at the ``isfile`` check but vanished
+    before ``open``: ``FileNotFoundError`` is folded into the
+    "missing" branch so a concurrent rotate doesn't surface as a
+    permission error upstream). PermissionError + other OSError
+    subclasses propagate so :func:`read_log` can map them to
+    ``ERR_PERMISSION_DENIED`` deterministically; UnicodeDecodeError
+    also propagates for the same reason.
 
     ``walnut`` is stamped onto each entry (purely metadata -- the
     parser has no way to know which walnut the log belongs to). Pass
@@ -301,8 +306,15 @@ def parse_log_entries(path: str, walnut: str) -> List[LogEntry]:
     """
     if not os.path.isfile(path):
         return []
-    with open(path, "r", encoding="utf-8") as f:
-        content = f.read()
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            content = f.read()
+    except FileNotFoundError:
+        # TOCTOU: the file disappeared between ``isfile`` and
+        # ``open``. Treat as missing so the upstream behavior matches
+        # the "file never existed" branch. Any other OSError
+        # (PermissionError, IsADirectoryError, etc.) propagates.
+        return []
 
     body = _strip_frontmatter(content)
     matches = list(_ENTRY_HEADING_RE.finditer(body))
@@ -474,22 +486,24 @@ def _collect_window(
     should be ``None`` (we reached EOF on the last chapter) or an
     integer (more entries remain we didn't buffer).
 
-    We walk sources lazily (active log first, then chapters in
-    descending order) and skip ahead by ``offset`` before starting
-    to accumulate. ``chapter_crossed`` is True once any entry we
-    keep came from a chapter file.
+    We walk sources in order (active log first, then chapters in
+    descending chapter number) and skip ahead by ``offset`` before
+    starting to accumulate. ``chapter_crossed`` is True once any
+    entry we keep came from a chapter file.
 
-    Performance notes
+    Error propagation
     -----------------
-    For the v0.1 scale target (43 walnuts, typical log <= 50 entries,
-    zero or one chapter on most walnuts), parsing every source up
-    front is cheap. We still lazy-read chapters -- we stop iterating
-    the moment the window is full AND we know there are no more
-    entries to count past the returned window, OR we've exhausted all
-    sources. The "know there are no more entries" condition requires
-    us to continue counting after the window fills; to keep the
-    implementation simple we accept that counting cost and buffer
-    only the visible window.
+    Read / decode failures (``PermissionError`` and other
+    ``OSError`` subclasses, ``UnicodeDecodeError``) are DELIBERATELY
+    propagated to the caller. :func:`read_log` catches them at the
+    tool boundary and maps to ``ERR_PERMISSION_DENIED``. Swallowing
+    them here would silently turn an unreadable chapter into
+    "zero entries," yielding a misleading ``total_entries`` /
+    ``next_offset`` and violating the "tools never raise but DO
+    surface permission failures" contract.
+    ``FileNotFoundError`` specifically is swallowed inside
+    :func:`parse_log_entries` (TOCTOU tolerance for rotated files)
+    so this loop never sees it.
     """
     buffered: List[LogEntry] = []
     total = 0
@@ -497,15 +511,10 @@ def _collect_window(
     remaining_to_skip = offset
     window_remaining = limit
 
-    # Active log first.
+    # Active log first. Exceptions from the parser propagate -- the
+    # caller maps them to ERR_PERMISSION_DENIED.
     if sources.active_log is not None:
-        try:
-            active_entries = parse_log_entries(sources.active_log, walnut)
-        except (OSError, UnicodeDecodeError) as exc:
-            logger.warning(
-                "read_log: failed to parse active log: %s", exc
-            )
-            active_entries = []
+        active_entries = parse_log_entries(sources.active_log, walnut)
         total += len(active_entries)
         for entry in active_entries:
             if remaining_to_skip > 0:
@@ -519,17 +528,10 @@ def _collect_window(
     # entry count to the total even if we don't end up returning any
     # entry from it -- the caller uses ``total`` to set
     # ``next_offset = None`` correctly when the client has paged
-    # past the end.
+    # past the end. As with the active log, parse exceptions
+    # propagate up; the caller's try/except wraps the whole window.
     for _chapter_num, chapter_path in sources.chapters:
-        try:
-            chapter_entries = parse_log_entries(chapter_path, walnut)
-        except (OSError, UnicodeDecodeError) as exc:
-            logger.warning(
-                "read_log: failed to parse chapter %r: %s",
-                chapter_path,
-                exc,
-            )
-            chapter_entries = []
+        chapter_entries = parse_log_entries(chapter_path, walnut)
         total += len(chapter_entries)
         for entry in chapter_entries:
             if remaining_to_skip > 0:
@@ -586,34 +588,38 @@ def _task_counts(tasks: List[Dict[str, Any]]) -> Dict[str, int]:
 def _collect_bundle_tasks(
     world_root: str, bundle_abs: str
 ) -> List[Dict[str, Any]]:
-    """Return tasks from every ``tasks.json`` under ``bundle_abs``.
+    """Return tasks from ``<bundle_abs>/tasks.json`` only.
 
-    Symlinked task files whose realpath escapes the World are dropped
-    silently (matches the bundle tool's posture). We walk the bundle
-    via :func:`tasks_pure._all_task_files` for the nested-walnut
-    boundary behavior and then containment-check each hit before the
-    parser opens it.
+    The frozen spec for ``list_tasks(bundle=...)`` reads "scoped to
+    that bundle's ``tasks.json``" -- singular. We DO NOT recurse
+    into nested bundles or directories; a bundle that happens to
+    contain another bundle's ``tasks.json`` (sub-bundle layout)
+    still returns only the top bundle's own tasks here. Callers
+    that want sub-bundle tasks address the sub-bundle directly.
+
+    Containment gate: the ``tasks.json`` path is realpath-checked
+    against the World root before the parser opens it. A symlinked
+    ``tasks.json`` whose realpath escapes the World is dropped
+    silently (matching the posture of :func:`_safe_read_manifest`
+    in the bundle tool).
+
+    Missing file -> ``[]`` (legitimate empty-bundle state).
+    :class:`KernelFileError` / :class:`OSError` propagate so the
+    tool layer can map them to ``ERR_PERMISSION_DENIED``.
     """
-    tasks: List[Dict[str, Any]] = []
-    try:
-        task_files = tasks_pure._all_task_files(bundle_abs)
-    except OSError as exc:
+    tasks_file = os.path.join(bundle_abs, "tasks.json")
+    if not os.path.isfile(tasks_file):
+        return []
+    if not is_inside(world_root, tasks_file):
         logger.warning(
-            "list_tasks: task-file discovery failed: %s", exc
+            "tasks.json at %r escapes World via symlink; dropping",
+            tasks_file,
         )
-        return tasks
-    for tf in task_files:
-        if not is_inside(world_root, tf):
-            logger.warning(
-                "tasks.json at %r escapes World via symlink; dropping",
-                tf,
-            )
-            continue
-        data = tasks_pure._read_tasks_json(tf)
-        if data is None:
-            continue
-        tasks.extend(data.get("tasks", []))
-    return tasks
+        return []
+    data = tasks_pure._read_tasks_json(tasks_file)
+    if data is None:
+        return []
+    return list(data.get("tasks", []))
 
 
 def _collect_walnut_tasks(
@@ -621,22 +627,20 @@ def _collect_walnut_tasks(
 ) -> List[Dict[str, Any]]:
     """Return tasks from every ``tasks.json`` under the walnut.
 
-    Uses :func:`tasks_pure._collect_all_tasks` for the aggregate
-    (honors nested-walnut boundaries). Then re-walks the file list
-    to apply the in-world containment gate -- ``_collect_all_tasks``
-    alone does not; the extra pass catches symlinked task files
-    pointing outside the World. This duplicates the walk cost but
-    keeps the security gate explicit rather than relying on a
-    vendored helper's posture.
+    Uses :func:`tasks_pure._all_task_files` to enumerate task files
+    (this honors nested-walnut boundaries so a parent walnut never
+    scans into child walnuts). Each file is then containment-gated
+    (``is_inside``) before the parser opens it -- a symlinked
+    ``tasks.json`` whose realpath escapes the World is dropped.
+
+    Exceptions from the vendored parser (``KernelFileError`` on
+    permission / I/O failure) and from ``os.walk`` (``OSError``) are
+    DELIBERATELY propagated. The tool layer catches both and maps to
+    ``ERR_PERMISSION_DENIED``. Swallowing them here would silently
+    return "no tasks" for an unreadable walnut, masking real
+    operational problems from the client.
     """
-    # Build the set of in-world tasks.json paths first.
-    try:
-        task_files = tasks_pure._all_task_files(walnut_abs)
-    except OSError as exc:
-        logger.warning(
-            "list_tasks: task-file discovery failed: %s", exc
-        )
-        return []
+    task_files = tasks_pure._all_task_files(walnut_abs)
     tasks: List[Dict[str, Any]] = []
     for tf in task_files:
         if not is_inside(world_root, tf):
@@ -718,18 +722,27 @@ async def read_log(
 
     sources = _resolve_log_sources(world_root, walnut_abs)
 
-    # Probe permission on the active log BEFORE parsing -- we want
-    # to surface ERR_PERMISSION_DENIED rather than silently treating
-    # an unreadable log as "no entries". Missing log (None) stays a
-    # non-error (fresh walnut).
-    if sources.active_log is not None and not os.access(
-        sources.active_log, os.R_OK
-    ):
-        return envelope.error(
-            errors.ERR_PERMISSION_DENIED,
-            walnut=walnut,
-            file="log",
-        )
+    # Probe permission on EVERY resolved source (active log +
+    # chapters) BEFORE parsing. A chapter whose mode blocks read is
+    # just as fatal as a locked active log -- it would break
+    # chapter-spanning pagination by silently skipping or by later
+    # raising mid-stream. Missing log (``sources.active_log is
+    # None``) stays a non-error (fresh walnut). ``os.R_OK`` is a
+    # cheap stat-level check; the defense-in-depth
+    # PermissionError try/except around :func:`_collect_window`
+    # covers the TOCTOU race where perms flip between the probe
+    # and the parser's open.
+    sources_to_probe: List[str] = []
+    if sources.active_log is not None:
+        sources_to_probe.append(sources.active_log)
+    sources_to_probe.extend(path for _num, path in sources.chapters)
+    for src_path in sources_to_probe:
+        if not os.access(src_path, os.R_OK):
+            return envelope.error(
+                errors.ERR_PERMISSION_DENIED,
+                walnut=walnut,
+                file="log",
+            )
 
     try:
         entries, total_entries, chapter_crossed = _collect_window(
@@ -737,6 +750,20 @@ async def read_log(
         )
     except PermissionError as exc:
         logger.warning("read_log denied for %r: %s", walnut, exc)
+        return envelope.error(
+            errors.ERR_PERMISSION_DENIED,
+            walnut=walnut,
+            file="log",
+        )
+    except UnicodeDecodeError as exc:
+        # A corrupt / non-UTF8 log is not a permission problem per
+        # se, but the most actionable answer from the client's
+        # perspective is still ERR_PERMISSION_DENIED ("we could not
+        # read the file"). The detailed errno / position lives in
+        # the audit log (T12), not the envelope.
+        logger.warning(
+            "read_log failed to decode log for %r: %s", walnut, exc
+        )
         return envelope.error(
             errors.ERR_PERMISSION_DENIED,
             walnut=walnut,
@@ -802,10 +829,16 @@ async def list_tasks(
     except errors.WalnutNotFoundError:
         return _walnut_not_found_envelope(world_root, walnut)
 
+    # ``_read_tasks_json`` raises :class:`errors.KernelFileError` on
+    # permission / I/O failures (not on malformed JSON -- that warns
+    # and returns ``None``). We catch both the vendored exception and
+    # bare ``OSError`` so ANY unreadable task file surfaces
+    # ERR_PERMISSION_DENIED rather than bubbling out as an uncaught
+    # exception and violating the "tools never raise" contract.
     if bundle is None:
         try:
             tasks = _collect_walnut_tasks(world_root, walnut_abs)
-        except PermissionError as exc:
+        except (errors.KernelFileError, PermissionError, OSError) as exc:
             logger.warning(
                 "list_tasks denied for walnut %r: %s", walnut, exc
             )
@@ -827,7 +860,7 @@ async def list_tasks(
             )
         try:
             tasks = _collect_bundle_tasks(world_root, bundle_abs)
-        except PermissionError as exc:
+        except (errors.KernelFileError, PermissionError, OSError) as exc:
             logger.warning(
                 "list_tasks denied for bundle %r/%r: %s",
                 walnut,

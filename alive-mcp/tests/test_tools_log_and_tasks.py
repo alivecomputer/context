@@ -561,6 +561,101 @@ class ReadLogChapterSpanningTests(unittest.TestCase):
         self.assertEqual(env["structuredContent"]["total_chapters"], 2)
 
 
+class ReadLogPermissionTests(unittest.TestCase):
+    """Permission-denied mapping for log + chapter files.
+
+    Skipped on Windows (chmod(0) semantics differ) and when running
+    as root (the mode bits are ignored).
+    """
+
+    def setUp(self) -> None:
+        self.world = _new_world()
+        self.addCleanup(self.world.cleanup)
+        _make_walnut(self.world, "demo")
+
+    def _should_skip(self) -> bool:
+        if os.name == "nt":
+            return True
+        try:
+            return os.geteuid() == 0
+        except AttributeError:
+            return True
+
+    def test_unreadable_active_log_returns_permission_denied(self) -> None:
+        if self._should_skip():
+            self.skipTest("chmod(0) not meaningful on this platform")
+        path = self.world.write_kernel_file(
+            "demo", "log.md", _make_log_with_entries(SEVEN_ENTRIES[:1])
+        )
+        os.chmod(path, 0o000)
+        self.addCleanup(lambda: os.chmod(path, 0o644))
+        ctx = _fake_ctx(str(self.world.root))
+        env = _run(lt_tools.read_log(ctx, "demo", 0, 5))
+        self.assertTrue(env["isError"])
+        self.assertEqual(
+            env["structuredContent"]["error"], "PERMISSION_DENIED"
+        )
+
+    def test_unreadable_chapter_returns_permission_denied(self) -> None:
+        if self._should_skip():
+            self.skipTest("chmod(0) not meaningful on this platform")
+        # Readable active log + one unreadable chapter. Even when
+        # the first page could be served from the active log alone,
+        # the tool must surface ERR_PERMISSION_DENIED because
+        # pagination may span into the chapter.
+        self.world.write_kernel_file(
+            "demo", "log.md", _make_log_with_entries(SEVEN_ENTRIES[:2])
+        )
+        chapter_path = self.world.write_chapter(
+            "demo", 1, _make_log_with_entries(SEVEN_ENTRIES[2:4])
+        )
+        os.chmod(chapter_path, 0o000)
+        self.addCleanup(lambda: os.chmod(chapter_path, 0o644))
+        ctx = _fake_ctx(str(self.world.root))
+        env = _run(lt_tools.read_log(ctx, "demo", 0, 5))
+        self.assertTrue(env["isError"])
+        self.assertEqual(
+            env["structuredContent"]["error"], "PERMISSION_DENIED"
+        )
+
+
+class ParseLogEntriesToctouTests(unittest.TestCase):
+    """TOCTOU: the log may be rotated / deleted between the isfile
+    check and the open call. ``parse_log_entries`` must treat
+    ``FileNotFoundError`` the same as the non-existent branch.
+    """
+
+    def test_filenotfound_between_isfile_and_open_returns_empty(
+        self,
+    ) -> None:
+        world = _new_world()
+        self.addCleanup(world.cleanup)
+        _make_walnut(world, "demo")
+        # Monkey-patch: pretend the file exists for ``isfile`` but
+        # raise FileNotFoundError on open. This simulates a
+        # concurrent rotate.
+        path = world.write_kernel_file(
+            "demo", "log.md", _make_log_with_entries(SEVEN_ENTRIES[:1])
+        )
+        self.assertTrue(os.path.isfile(str(path)))
+
+        import builtins
+
+        orig_open = builtins.open
+
+        def flaky_open(p, *args, **kwargs):
+            if str(p) == str(path):
+                raise FileNotFoundError(2, "no such file", str(path))
+            return orig_open(p, *args, **kwargs)
+
+        try:
+            builtins.open = flaky_open
+            entries = lt_tools.parse_log_entries(str(path), "demo")
+        finally:
+            builtins.open = orig_open
+        self.assertEqual(entries, [])
+
+
 # ---------------------------------------------------------------------------
 # list_tasks tool tests.
 # ---------------------------------------------------------------------------
@@ -686,6 +781,30 @@ class ListTasksBundleScopedTests(unittest.TestCase):
             tasks=[{"title": "other task", "status": "todo"}],
         )
 
+    def test_bundle_scope_ignores_nested_tasks_json(self) -> None:
+        """Bundle-scoped reads must return ONLY this bundle's tasks.json.
+
+        The frozen spec says "scoped to that bundle's `tasks.json`"
+        (singular). A ``tasks.json`` nested at e.g. ``<bundle>/sub/``
+        or ``<bundle>/raw/sub/tasks.json`` must NOT contribute --
+        callers that want those address the sub-bundle directly.
+        """
+        # Sub-bundle tasks.json that must NOT leak into the parent
+        # bundle's result.
+        nested = self.world.walnut_path("demo/operations/sub-bundle")
+        nested.mkdir(parents=True, exist_ok=True)
+        (nested / "tasks.json").write_text(
+            json.dumps(
+                {"tasks": [{"title": "nested task", "status": "todo"}]}
+            ),
+            encoding="utf-8",
+        )
+        env = self._call("demo", bundle="operations")
+        self.assertFalse(env["isError"], msg=env)
+        titles = {t["title"] for t in env["structuredContent"]["tasks"]}
+        self.assertEqual(titles, {"ops task 1", "ops task 2"})
+        self.assertNotIn("nested task", titles)
+
     def _call(self, walnut: str, bundle: Optional[str] = None) -> dict:
         ctx = _fake_ctx(str(self.world.root))
         return _run(lt_tools.list_tasks(ctx, walnut, bundle))
@@ -725,6 +844,70 @@ class ListTasksBundleScopedTests(unittest.TestCase):
         self.assertEqual(
             env["structuredContent"]["counts"],
             {"urgent": 0, "active": 0, "todo": 0, "blocked": 0, "done": 0},
+        )
+
+
+class ListTasksPermissionTests(unittest.TestCase):
+    """Unreadable tasks.json must surface as ERR_PERMISSION_DENIED.
+
+    Skipped on Windows and root where chmod(0) is not meaningful.
+    """
+
+    def setUp(self) -> None:
+        self.world = _new_world()
+        self.addCleanup(self.world.cleanup)
+        _make_walnut(self.world, "demo")
+
+    def _should_skip(self) -> bool:
+        if os.name == "nt":
+            return True
+        try:
+            return os.geteuid() == 0
+        except AttributeError:
+            return True
+
+    def _call(
+        self, walnut: str, bundle: Optional[str] = None
+    ) -> dict:
+        ctx = _fake_ctx(str(self.world.root))
+        return _run(lt_tools.list_tasks(ctx, walnut, bundle))
+
+    def test_unreadable_walnut_tasks_returns_permission_denied(self) -> None:
+        if self._should_skip():
+            self.skipTest("chmod(0) not meaningful on this platform")
+        tasks_path = (
+            self.world.walnut_path("demo") / "_kernel" / "tasks.json"
+        )
+        tasks_path.parent.mkdir(parents=True, exist_ok=True)
+        tasks_path.write_text(
+            json.dumps({"tasks": [{"title": "x", "status": "todo"}]}),
+            encoding="utf-8",
+        )
+        os.chmod(tasks_path, 0o000)
+        self.addCleanup(lambda: os.chmod(tasks_path, 0o644))
+        env = self._call("demo")
+        self.assertTrue(env["isError"])
+        self.assertEqual(
+            env["structuredContent"]["error"], "PERMISSION_DENIED"
+        )
+
+    def test_unreadable_bundle_tasks_returns_permission_denied(self) -> None:
+        if self._should_skip():
+            self.skipTest("chmod(0) not meaningful on this platform")
+        self.world.write_bundle(
+            "demo",
+            "secret",
+            tasks=[{"title": "hidden", "status": "todo"}],
+        )
+        tasks_path = (
+            self.world.walnut_path("demo") / "secret" / "tasks.json"
+        )
+        os.chmod(tasks_path, 0o000)
+        self.addCleanup(lambda: os.chmod(tasks_path, 0o644))
+        env = self._call("demo", bundle="secret")
+        self.assertTrue(env["isError"])
+        self.assertEqual(
+            env["structuredContent"]["error"], "PERMISSION_DENIED"
         )
 
 
