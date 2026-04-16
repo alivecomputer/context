@@ -914,9 +914,11 @@ def build_server() -> FastMCP[AppContext]:
     # roster frozen here is the roster advertised on initialize.
     # Import locally to keep the server module's import graph narrow
     # (tools pull in envelope + errors + paths + vendored helpers).
+    from alive_mcp.tools import bundle as _bundle_tools  # noqa: E402
     from alive_mcp.tools import walnut as _walnut_tools  # noqa: E402
 
     _walnut_tools.register(server)
+    _bundle_tools.register(server)
 
     return server
 

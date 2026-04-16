@@ -9,8 +9,10 @@ v0.1 tool layout:
 
 * :mod:`alive_mcp.tools.walnut` -- walnut-centric reads (T6):
   ``list_walnuts``, ``get_walnut_state``, ``read_walnut_kernel``.
-* (T7+) ``alive_mcp.tools.bundle``, ``alive_mcp.tools.search``,
-  ``alive_mcp.tools.log_tasks`` -- land in later tasks.
+* :mod:`alive_mcp.tools.bundle` -- bundle-centric reads (T7):
+  ``list_bundles``, ``get_bundle``, ``read_bundle_manifest``.
+* (T8+) ``alive_mcp.tools.search``, ``alive_mcp.tools.log_tasks`` --
+  land in later tasks.
 
 The :mod:`alive_mcp.tools._audit_stub` module carries the ``@audited``
 decorator that every tool wraps itself in. T12 replaces the stub body
