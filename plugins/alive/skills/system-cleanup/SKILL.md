@@ -60,7 +60,9 @@ Phase 3: Deep Audit (one walnut, 12 checks — parallel subagents)
 
 Tidy is read-heavy. Every phase uses subagents to keep the main context clean.
 
-**All subagents MUST use `subagent_type: "Explore"`** — not general-purpose. Explore agents have direct file read access without needing Bash. General-purpose agents attempt Bash for file reads, which is denied when running in the background. This is a hard constraint of Claude Code's permission model.
+**Discovery subagents MUST use `subagent_type: "Explore"`** — Explore agents have direct file read access without needing Bash. Use Explore for all Phase 1, Phase 2, and Phase 3 discovery checks.
+
+**Fix-execution subagents MUST use `subagent_type: "general-purpose"`** — only general-purpose agents have Write/Edit access. Dispatch one general-purpose agent per approved fix.
 
 - **Phase 1:** Dispatch all 7 root checks as parallel subagents. Wait for all. Present results together — one line per passing check, expand on failures only.
 - **Phase 2:** Single subagent reads all walnut frontmatter, returns the health table.
@@ -198,7 +200,7 @@ For each the human picks, propose the specific fix:
 ╰─
 ```
 
-**On "go":** dispatch parallel subagents to execute — one per fix. Each subagent reads the file, makes the edit, returns confirmation. Main context does not touch files.
+**On "go":** dispatch parallel `general-purpose` subagents to execute — one per fix. Each subagent reads the file, makes the edit, returns confirmation. Main context does not touch files.
 
 ```
 ╭─ 🐿️ root audit complete
@@ -488,7 +490,7 @@ For each the human picks, propose the specific fix:
 ╰─
 ```
 
-**On "go":** dispatch parallel subagents to execute — one per fix. Each subagent reads the file, makes the edit, returns confirmation. Main context does not touch files.
+**On "go":** dispatch parallel `general-purpose` subagents to execute — one per fix. Each subagent reads the file, makes the edit, returns confirmation. Main context does not touch files.
 
 ```
 ╭─ 🐿️ stellarforge — fixes applied
