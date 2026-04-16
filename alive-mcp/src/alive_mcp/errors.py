@@ -174,13 +174,15 @@ ERR_AUDIT_DISK_FULL: ErrorCode = ErrorCode.ERR_AUDIT_DISK_FULL
 # -----------------------------------------------------------------------------
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class ErrorSpec:
     """User-facing error template + recovery suggestions for a code.
 
-    ``slots=True`` would be cleaner but is 3.10+; we use the default
-    dataclass form for compatibility with the widest ``_pure`` import
-    chain. ``frozen=True`` catches accidental mutation of the codebook.
+    ``frozen=True`` catches accidental mutation of the codebook;
+    ``slots=True`` keeps the per-spec memory footprint tight (the
+    codebook is small but spec objects are created at import time and
+    live for the server's lifetime). Python 3.10 is the project
+    floor — ``slots`` is available on every supported interpreter.
     """
 
     code: ErrorCode

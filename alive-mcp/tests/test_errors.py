@@ -153,10 +153,14 @@ class NoAbsolutePathsInMessagesTests(unittest.TestCase):
     # ``{placeholders}`` that carry caller-facing identifiers (walnut,
     # bundle, file, query, tool) are not absolute paths.
     #
-    # The POSIX check accepts ``/`` followed by ANY path-like character
-    # (letter, digit, ``.``, ``_``, ``~``) at the boundary of a word so
-    # ``/.alive/`` and ``/_kernel/`` are caught alongside ``/etc/``.
-    POSIX_ABS = re.compile(r"(?:^|[\s'\"`(])/[A-Za-z0-9._~]")
+    # Boundary character class is intentionally wide — we want to catch
+    # paths after ``=``, ``:``, ``,``, brackets, braces, etc. so
+    # ``path=/etc/passwd`` or ``file:/Users/me`` aren't missed. False
+    # positives (over-detecting something that looks like an absolute
+    # path) are preferable to false negatives (missing a real leak).
+    POSIX_ABS = re.compile(
+        r"(?:^|[\s'\"`(\[\{=,:;])/[A-Za-z0-9._~\-]"
+    )
     WINDOWS_ABS = re.compile(r"[A-Za-z]:[\\/]")
 
     def test_no_posix_absolute_path_in_any_message(self) -> None:
@@ -214,6 +218,13 @@ class NoAbsolutePathsInMessagesTests(unittest.TestCase):
         # non-absolute contexts (there are none in the codebook but
         # guard the detector anyway).
         self.assertIsNone(self.POSIX_ABS.search("a/b/c is a relative path"))
+
+    def test_posix_regex_catches_paths_after_equals_and_colons(self) -> None:
+        """Regression: the earlier boundary class missed ``=``/``:``."""
+        self.assertIsNotNone(self.POSIX_ABS.search("path=/etc/passwd"))
+        self.assertIsNotNone(self.POSIX_ABS.search("file:/Users/me/log.md"))
+        self.assertIsNotNone(self.POSIX_ABS.search("[root=/opt/alive]"))
+        self.assertIsNotNone(self.POSIX_ABS.search("{file:/var/log/audit}"))
 
 
 class ExceptionToCodeMappingTests(unittest.TestCase):
@@ -482,6 +493,62 @@ class EnvelopeErrorShapeTests(unittest.TestCase):
             self.assertNotIn(
                 "{", sc["message"], msg=f"{code.value} has unfilled placeholder"
             )
+
+
+class EnvelopePathRedactionTests(unittest.TestCase):
+    """Defense-in-depth: absolute paths in kwargs don't leak into envelopes.
+
+    The codebook templates never reference paths, and callers are
+    supposed to pass names (not paths) in kwargs. But a caller bug
+    (``walnut="/Users/me/..."``) must not defeat the
+    ``mask_error_details=True`` promise. :func:`envelope.error`
+    redacts POSIX and Windows absolute paths in string kwargs before
+    templating, and again in the final message, replacing with
+    ``<path>``.
+    """
+
+    def test_posix_absolute_path_in_walnut_kwarg_is_redacted(self) -> None:
+        resp = envelope.error(
+            errors.ErrorCode.ERR_WALNUT_NOT_FOUND,
+            walnut="/Users/patrick/04_Ventures/alive",
+        )
+        message = resp["structuredContent"]["message"]
+        self.assertNotIn("/Users/patrick", message)
+        self.assertNotIn("04_Ventures", message)  # whole path redacted
+        self.assertIn("<path>", message)
+
+    def test_windows_absolute_path_in_walnut_kwarg_is_redacted(self) -> None:
+        resp = envelope.error(
+            errors.ErrorCode.ERR_WALNUT_NOT_FOUND,
+            walnut=r"C:\Users\patrick\alive",
+        )
+        message = resp["structuredContent"]["message"]
+        self.assertNotIn(r"C:\Users", message)
+        self.assertIn("<path>", message)
+
+    def test_dotfile_absolute_path_is_redacted(self) -> None:
+        """``/.alive/_mcp/audit.log``-style paths are redacted."""
+        resp = envelope.error(
+            errors.ErrorCode.ERR_PERMISSION_DENIED,
+            walnut="nova-station",
+            file="/.alive/_mcp/audit.log",
+        )
+        message = resp["structuredContent"]["message"]
+        self.assertNotIn("/.alive", message)
+        self.assertNotIn("audit.log", message)
+        self.assertIn("<path>", message)
+
+    def test_non_path_kwargs_untouched(self) -> None:
+        """Ordinary walnut/bundle names pass through unredacted."""
+        resp = envelope.error(
+            errors.ErrorCode.ERR_BUNDLE_NOT_FOUND,
+            walnut="nova-station",
+            bundle="shielding-review",
+        )
+        message = resp["structuredContent"]["message"]
+        self.assertIn("nova-station", message)
+        self.assertIn("shielding-review", message)
+        self.assertNotIn("<path>", message)
 
 
 class EnvelopeErrorFromExceptionTests(unittest.TestCase):

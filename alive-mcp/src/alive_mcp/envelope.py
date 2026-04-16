@@ -28,9 +28,12 @@ still predate the structured-content field fall back to parsing
 Error envelope shape
 --------------------
 
-The success envelope's ``structuredContent`` holds the tool's return
-payload verbatim. The error envelope's ``structuredContent`` is a
-fixed record::
+The success envelope's ``structuredContent`` carries the tool's return
+payload. Dict payloads flow through unchanged (merged with any
+``**meta``); non-dict payloads (lists, scalars) are wrapped under a
+``data`` key so ``structuredContent`` is always a JSON object, as MCP
+requires. The error envelope's ``structuredContent`` is a fixed
+record::
 
     {
       "error": "<code-without-ERR_-prefix>",     # e.g. "WALNUT_NOT_FOUND"
@@ -82,9 +85,61 @@ captures anyway).
 from __future__ import annotations
 
 import json
+import re
 from typing import Any, Optional, Tuple
 
 from alive_mcp import errors
+
+
+# Defense-in-depth redaction patterns. These run over every formatted
+# error message and every string kwarg that reaches template formatting,
+# so even if a caller accidentally passes an absolute path as context,
+# the client sees ``<path>`` instead of the real location.
+#
+# POSIX: ``/`` followed by at least one path segment of letters, digits,
+# dots, underscores, hyphens, or tildes — catches ``/etc/passwd``,
+# ``/Users/foo/bar``, ``/.alive/_mcp/audit.log``, ``/_kernel/log.md``.
+# The leading ``/`` must be at a word boundary (start of string, after
+# whitespace, quote, ``=``, ``:``, ``(``, ``[``, ``{``, or similar) so
+# we don't accidentally redact URL paths or relative-looking fragments.
+_POSIX_ABS_PATH = re.compile(
+    r"(?:(?<=^)|(?<=[\s'\"`(\[\{=,:;]))/[A-Za-z0-9._~\-]+(?:/[A-Za-z0-9._~\-]+)*"
+)
+
+# Windows: ``C:\`` or ``D:/`` drive letter followed by any path
+# characters. Simpler than POSIX because the drive prefix is
+# unambiguous.
+_WINDOWS_ABS_PATH = re.compile(r"[A-Za-z]:[\\/][^\s'\"`)]*")
+
+
+def _redact_paths(text: str) -> str:
+    """Strip absolute filesystem paths from ``text``, replacing with ``<path>``.
+
+    Runs on EVERY user-facing error message and on every string kwarg
+    before it reaches template formatting. This is defense-in-depth:
+    the codebook templates are audited to not reference paths at all,
+    but a caller that accidentally passes ``file="/Users/me/log.md"``
+    would still get that path interpolated if we didn't redact here.
+
+    Takes a moderately conservative approach — false positives (over-
+    redacting something that happens to look like a path) are
+    preferable to false negatives (leaking a real path) per the
+    ``mask_error_details=True`` guarantee.
+    """
+    text = _POSIX_ABS_PATH.sub("<path>", text)
+    text = _WINDOWS_ABS_PATH.sub("<path>", text)
+    return text
+
+
+def _sanitize_kwargs(template_kwargs: dict[str, Any]) -> dict[str, Any]:
+    """Redact absolute paths from string kwargs before templating."""
+    out: dict[str, Any] = {}
+    for k, v in template_kwargs.items():
+        if isinstance(v, str):
+            out[k] = _redact_paths(v)
+        else:
+            out[k] = v
+    return out
 
 
 def _text_content(text: str) -> dict[str, Any]:
@@ -252,8 +307,15 @@ def error(code: errors.CodeLike, **template_kwargs: Any) -> dict[str, Any]:
         suggestions: tuple[str, ...] = ()
     else:
         short_code = enum_code.wire  # type: ignore[union-attr]
+        # Defense-in-depth: redact absolute paths from string kwargs
+        # BEFORE they reach template formatting, and again from the
+        # final message. Belt AND suspenders — the codebook templates
+        # do not reference paths, but a caller that passes
+        # ``walnut="/Users/me/..."`` would otherwise see that path
+        # interpolated, defeating mask_error_details=True.
+        safe_kwargs = _sanitize_kwargs(dict(template_kwargs))
         try:
-            message = spec.message.format(**template_kwargs)
+            message = spec.message.format(**safe_kwargs)
         except (KeyError, ValueError, TypeError, IndexError):
             # Any format failure — missing placeholder, spec mismatch
             # (``{timeout_s:.1f}`` with a non-numeric kwarg), or a
@@ -263,6 +325,11 @@ def error(code: errors.CodeLike, **template_kwargs: Any) -> dict[str, Any]:
             # the mask_error_details=True promise forbids leaking. The
             # audit log (T12) is the right channel for debug info.
             message = spec.message
+        # Final sanitizer pass covers the (unlikely) case where a
+        # template itself ever grew an absolute-path literal. The
+        # no-absolute-path test in test_errors.py prevents that at
+        # merge time, but this is cheap and belt-and-suspenders.
+        message = _redact_paths(message)
         suggestions = spec.suggestions
 
     structured: dict[str, Any] = {
