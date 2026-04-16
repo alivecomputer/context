@@ -1,0 +1,15 @@
+{
+  "tasks": [
+    {
+      "id": "t001",
+      "title": "wire vendor smoke test",
+      "status": "active",
+      "priority": "active",
+      "assignee": null,
+      "due": null,
+      "tags": ["vendor"],
+      "created": "2026-04-16",
+      "session": "smoke"
+    }
+  ]
+}

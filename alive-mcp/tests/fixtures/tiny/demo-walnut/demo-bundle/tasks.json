@@ -1,0 +1,16 @@
+{
+  "tasks": [
+    {
+      "id": "t002",
+      "title": "exercise bundle task path",
+      "status": "todo",
+      "priority": "todo",
+      "assignee": null,
+      "due": null,
+      "tags": [],
+      "created": "2026-04-16",
+      "session": "smoke",
+      "bundle": "demo-bundle"
+    }
+  ]
+}

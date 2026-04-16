@@ -1,0 +1,8 @@
+goal: "Demo bundle for alive-mcp vendor smoke test"
+status: draft
+updated: 2026-04-16
+context: |
+  Minimal bundle manifest. Used to verify walnut_paths.find_bundles and
+  project_pure.scan_bundles against a tiny fixture.
+squirrels:
+  - abcdef01

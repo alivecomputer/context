@@ -32,3 +32,9 @@ htmlcov/
 # guard the common mistake of running the server from the repo root and leaving
 # an audit dir behind in a checkout)
 .alive/_mcp/
+
+# Re-include fixture worlds -- the repo-level .gitignore ignores .alive/ so it
+# doesn't track runtime state in real worlds, but our tiny fixture World IS the
+# test data and MUST be checked in.
+!tests/fixtures/**/.alive/
+!tests/fixtures/**/.alive/**
