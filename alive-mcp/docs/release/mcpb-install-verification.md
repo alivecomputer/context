@@ -20,6 +20,13 @@ Install these once per machine you verify on. Keep them current between
 release candidates so the verification reflects a realistic end-user
 environment.
 
+**Working directory for every shell command below:** the `alive-mcp/`
+package root (the directory that contains `pyproject.toml`,
+`scripts/`, `mcpb/`, and `docs/`). In the monorepo that is
+`claude-code/alive-mcp/`; in a split checkout it is the repo root.
+Every path in this doc is relative to that root unless explicitly
+prefixed with `~/` or an absolute path.
+
 1. **Claude Desktop ≥ 0.8** — the `.mcpb` drag-and-drop install path
    landed in 0.8. Verify your version at
    `Claude Desktop → Settings → About`.
@@ -28,8 +35,9 @@ environment.
    `curl -LsSf https://astral.sh/uv/install.sh | sh` if absent. Restart
    Claude Desktop after installing so it picks up the updated `PATH`.
 3. **A World to point at** — either a real ALIVE world or the fixture
-   world at `alive-mcp/tests/fixtures/world-basic/`. Note the absolute
-   path; you will paste it into the environment config below.
+   world at `tests/fixtures/world-basic/` (relative to the alive-mcp
+   package root). Note the absolute path; you will paste it into the
+   environment config below.
 4. **The bundle file** — either downloaded from the GitHub release
    (`alive-mcp-0.1.0.mcpb`) or built locally via
    `scripts/build-mcpb.sh --validate`.
@@ -127,10 +135,11 @@ confirm the first tool call still works.
 Map each of these to the `fn-10-60k.17` acceptance criteria. All six
 must be checked before the release ships.
 
-- [ ] `scripts/build-mcpb.sh --validate` produces
-      `dist/alive-mcp-0.1.0.mcpb` under 500KB (current build ~220KB).
-- [ ] `mcpb validate alive-mcp/mcpb/manifest.json` passes with no
-      errors.
+- [ ] `scripts/build-mcpb.sh --validate` (run from the `alive-mcp/`
+      package root) produces `dist/alive-mcp-0.1.0.mcpb` under 500KB
+      (current build ~220KB).
+- [ ] `mcpb validate mcpb/manifest.json` (run from the `alive-mcp/`
+      package root) passes with no errors.
 - [ ] Drag-and-drop install in Claude Desktop (macOS): server appears
       in `Settings → Connections → Developer` with status **Connected**.
 - [ ] First tool call from a Claude Desktop conversation (`list_walnuts`)
@@ -178,8 +187,10 @@ launches hit the uv cache and start instantly.
 While iterating on the manifest or the bundle shape:
 
 ```bash
+# Run from the alive-mcp/ package root.
+
 # 1. Rebuild
-alive-mcp/scripts/build-mcpb.sh --validate
+scripts/build-mcpb.sh --validate
 
 # 2. Uninstall the previous version in Claude Desktop (Phase 3)
 

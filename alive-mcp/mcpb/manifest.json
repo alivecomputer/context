@@ -4,7 +4,7 @@
   "display_name": "ALIVE",
   "version": "0.1.0",
   "description": "Local-first personal context infrastructure via MCP",
-  "long_description": "Read-only Model Context Protocol server that exposes the ALIVE Context System — your walnuts, bundles, kernel, and log — to Claude Desktop. Ten tools, four kernel resources per walnut, filesystem subscriptions, JSONL audit log. No writes, no network, no phone-home. Point Claude Desktop at your World via the ALIVE_WORLD_ROOT environment variable (or MCP Roots in a future Claude Desktop build) and every session gets full access to your context without copy-paste.",
+  "long_description": "Read-only Model Context Protocol server that exposes the ALIVE Context System — your walnuts, bundles, kernel, and log — to Claude Desktop. Ten tools, four kernel resources per walnut, filesystem subscriptions. The server never writes to your walnuts or kernel files; the only file it creates is a local JSONL audit log at <world>/.alive/_mcp/audit.log (capped at 10MB with rotation, for your own review). No network traffic, no phone-home. Point Claude Desktop at your World via the ALIVE_WORLD_ROOT environment variable (or MCP Roots in a future Claude Desktop build) and every session gets full access to your context without copy-paste.",
   "author": {
     "name": "Patrick Brosnan",
     "email": "patrick@supernormalsystems.com",

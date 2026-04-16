@@ -99,11 +99,12 @@ if [[ ! -f "${MANIFEST_SRC}" ]]; then
 fi
 
 # --- dependency checks -------------------------------------------------------
-
-if ! command -v python3 >/dev/null 2>&1; then
-    echo "error: python3 is required to read pyproject.toml" >&2
-    exit 1
-fi
+#
+# Only two real prereqs: `awk` (for version parsing — installed on every
+# Unix by default, including every GitHub Actions runner) and `npm` (to
+# install `mcpb` if it is missing). `awk` is so universal we do not check
+# for it explicitly; the script would fail with a clearer shell error
+# than a redundant `command -v` check anyway.
 
 if ! command -v npm >/dev/null 2>&1; then
     echo "error: npm is required to install @anthropic-ai/mcpb" >&2
@@ -178,12 +179,21 @@ fi
 extract_manifest_version() {
     # Usage: extract_manifest_version <path-to-manifest.json>
     #
-    # Prints the top-level ``"version"`` value. The JSON spec allows
-    # arbitrary key ordering, but we also want to avoid matching a
-    # nested ``"version"`` (e.g., under ``"compatibility"``). The awk
-    # program looks for ``"version":`` that is NOT indented beyond the
-    # top level. Our manifest is hand-maintained with two-space indent
-    # so "top level" means exactly two leading spaces.
+    # Prints the top-level ``"version"`` value. Prefers ``jq`` when
+    # present (robust against any JSON reformatting), falls back to
+    # awk (robust against everything EXCEPT the file being pretty-
+    # printed with non-two-space indent). Python is NOT used so we
+    # keep the build prereqs minimal — awk + jq-if-available is
+    # enough, and both are on every mainstream CI runner.
+    if command -v jq >/dev/null 2>&1; then
+        jq -r '.version' "$1"
+        return
+    fi
+    # awk fallback. We avoid matching a nested ``"version"`` (e.g.,
+    # under ``"compatibility"``) by requiring the key at exactly
+    # two-space indent — our canonical format. Reformatting the file
+    # with different indent will trip this; re-run with ``jq`` on
+    # PATH to bypass the constraint.
     awk '
         /^  "version"[[:space:]]*:[[:space:]]*"[^"]+"/ {
             # Strip the key portion, then extract the first quoted
