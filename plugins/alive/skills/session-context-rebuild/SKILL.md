@@ -32,6 +32,12 @@ Dispatch one `general-purpose` subagent to map the territory. It reads the `sess
 - Whether sessions overlap (parallel/conflicting work)
 - Unsaved stash items from crashed sessions
 
+**Cross-walnut detection:** the scout performs two queries, not one:
+1. **Walnut-tagged match** — squirrel YAMLs where `walnut: {target}` (the obvious set)
+2. **Routed-stash match** — squirrel YAMLs where any stash item's `routed:` field contains the target walnut name (catches maintenance sessions with `walnut: null` that routed work to this walnut)
+
+Merge-deduplicate by session_id. Report both counts so the user sees "5 walnut-tagged + 1 cross-walnut routed" instead of just "5 sessions."
+
 ```
 ╭─ 🐿️ context rebuild — scouting
 │  Found 5 sessions on this walnut (last 2 weeks)

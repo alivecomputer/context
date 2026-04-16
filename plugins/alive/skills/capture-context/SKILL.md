@@ -44,6 +44,8 @@ No processing. Just identification.
 
 Even if extraction fails or is skipped, the raw content is preserved.
 
+**Pre-capture check:** Before proposing a destination, grep the target walnut's bundle manifests and `brief.md` files for the inbox filename. If found, the file is already referenced — route into that bundle's `raw/` with a note "file was already cited by this bundle" rather than creating a duplicate reference elsewhere.
+
 **Routing decision:** Check `_kernel/now.json` for an active `bundle:` field.
 
 **If active bundle exists — all three steps are mandatory, not optional:**

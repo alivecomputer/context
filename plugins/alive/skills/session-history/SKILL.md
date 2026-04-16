@@ -28,7 +28,9 @@ The full conversation. Every message, every agent response, every tool call, eve
 
 ### Browse (no args)
 
-Show recent sessions across all walnuts.
+Show recent sessions across all walnuts. **Default filter:** only show sessions with `saves > 0` or non-empty stash. Cap at 10 results. Add a summary line: "N empty shells not shown." Use `history --shells` to include them.
+
+**Data source:** prefer `.alive/_index.yaml` `recent_sessions:` as primary data. Fall back to direct `.alive/_squirrels/` YAML walk only if the index is missing or returns fewer results than requested.
 
 ```
 ╭─ squirrel history — recent sessions
