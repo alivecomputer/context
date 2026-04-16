@@ -188,28 +188,42 @@ class InitializeHandshakeTests(unittest.TestCase):
             if proc.poll() is None:
                 proc.kill()
 
-        # Decode all frames on stdout — there should be exactly one
-        # (the initialize response); any additional frames mean the
-        # server leaked diagnostics onto stdout.
-        stdout_lines = [ln for ln in stdout.splitlines() if ln.strip()]
-        self.assertEqual(
-            len(stdout_lines),
-            1,
-            msg=(
-                "expected exactly one frame on stdout (initialize response); "
-                "got {n}. This almost always means something leaked a "
-                "print() onto stdout. Lines: {lines!r}. Stderr: {stderr!r}"
-            ).format(
-                n=len(stdout_lines),
-                lines=stdout_lines,
-                stderr=stderr.decode("utf-8", errors="replace"),
-            ),
-        )
+        # Every non-blank line on stdout MUST be a valid JSON-RPC 2.0
+        # frame. The ``initialize`` response appears among them; any
+        # additional frames are legitimate if they parse as JSON-RPC
+        # (e.g. a server-initiated ``roots/list`` request that our
+        # test harness didn't answer). What we will NOT tolerate is a
+        # non-JSON line on stdout — that's the print()-contamination
+        # failure mode.
+        init_response = None
+        for raw in stdout.splitlines():
+            line = raw.strip()
+            if not line:
+                continue
+            try:
+                frame = json.loads(line.decode("utf-8"))
+            except json.JSONDecodeError as exc:
+                self.fail(
+                    "non-JSON line on stdout (print() contamination?): "
+                    "{line!r}; decode error: {exc}. Stderr: {stderr!r}".format(
+                        line=line.decode("utf-8", errors="replace"),
+                        exc=exc,
+                        stderr=stderr.decode("utf-8", errors="replace"),
+                    )
+                )
+            self.assertEqual(
+                frame.get("jsonrpc"),
+                "2.0",
+                msg=f"stdout frame is not JSON-RPC 2.0: {frame!r}",
+            )
+            if frame.get("id") == 1 and "result" in frame:
+                init_response = frame
 
-        response = json.loads(stdout_lines[0].decode("utf-8"))
-        self.assertEqual(response.get("jsonrpc"), "2.0")
-        self.assertEqual(response.get("id"), 1)
-        self.assertIn("result", response, msg=f"response: {response!r}")
+        self.assertIsNotNone(
+            init_response,
+            msg="server never emitted initialize response (id=1)",
+        )
+        response = init_response
         result = response["result"]
 
         # Acceptance: protocolVersion echoed at 2025-06-18.
@@ -358,6 +372,13 @@ class InitializeHandshakeTests(unittest.TestCase):
         first call. The initialize handshake must succeed whether a
         World has been resolved or not, because the client may set
         Roots AFTER initialize via a roots/list_changed notification.
+
+        The client's ``capabilities.roots`` in the request tells the
+        server it's safe to issue a server-initiated ``roots/list``
+        request, which we see on stdout as an additional JSON-RPC
+        frame. The test accepts that extra frame — what we're asserting
+        is that the initialize RESPONSE (id=1) carries a ``result``,
+        not an ``error``.
         """
         proc = _spawn_server()
         try:
@@ -370,11 +391,19 @@ class InitializeHandshakeTests(unittest.TestCase):
             proc.communicate()
             self.fail("server did not respond within 15s")
 
-        stdout_lines = [ln for ln in stdout.splitlines() if ln.strip()]
-        self.assertEqual(len(stdout_lines), 1)
-        response = json.loads(stdout_lines[0].decode("utf-8"))
-        self.assertIn("result", response)
-        self.assertNotIn("error", response)
+        init_response = None
+        for raw in stdout.splitlines():
+            line = raw.strip()
+            if not line:
+                continue
+            frame = json.loads(line.decode("utf-8"))
+            if frame.get("id") == 1 and ("result" in frame or "error" in frame):
+                init_response = frame
+                break
+
+        self.assertIsNotNone(init_response, msg="no initialize response")
+        self.assertIn("result", init_response)
+        self.assertNotIn("error", init_response)
 
 
 # -----------------------------------------------------------------------------
@@ -458,6 +487,134 @@ class CapabilityOverrideTests(unittest.TestCase):
                 "v0.1 must not advertise completions capability. Got {!r}"
             ).format(caps.completions),
         )
+
+
+class RootsDiscoveryEndToEndTests(unittest.TestCase):
+    """Exercise the Roots discovery path end-to-end with a live client.
+
+    Uses the mcp SDK's in-memory transport
+    (:func:`mcp.shared.memory.create_connected_server_and_client_session`)
+    to drive the server with a real ClientSession. The client's
+    ``list_roots_callback`` answers the server's ``roots/list``
+    request with a fixture World, and the test asserts that the
+    server's :class:`AppContext.world_root` gets populated — i.e. the
+    full Roots round-trip (server REQUEST -> client RESPONSE -> server
+    discovery -> AppContext mutation) works.
+
+    This is the test that was requested by the T5 acceptance bullet
+    "FastMCP Roots API exercised: server requests roots/list from
+    client in test harness that simulates client, verifies response
+    handling". It's an in-process test rather than a subprocess pump
+    because: (a) the in-memory transport exists for exactly this
+    purpose, (b) a stdout/stdin pump has to simulate the JSON-RPC
+    framing by hand, and (c) failures in the real dispatch path would
+    otherwise be hard to diagnose.
+    """
+
+    def test_server_requests_roots_and_populates_world_root(self) -> None:
+        import asyncio
+        import os
+        import tempfile
+        from datetime import timedelta
+
+        from mcp import types as mcp_types
+        from mcp.shared.memory import create_connected_server_and_client_session
+
+        from alive_mcp.server import AppContext, build_server
+
+        async def run() -> None:
+            # Fixture World directory satisfying the ``.alive/`` predicate.
+            with tempfile.TemporaryDirectory(prefix="alive-mcp-roots-") as tmp:
+                world_root = os.path.realpath(tmp)
+                os.makedirs(os.path.join(world_root, ".alive"), exist_ok=True)
+
+                # Client-side callback: when the server sends
+                # ``roots/list``, respond with our fixture World as a
+                # single ``file://`` root. Tracks whether the callback
+                # was actually invoked — the strongest evidence that
+                # the server issued a server-initiated request.
+                callback_invocations: list[str] = []
+
+                async def list_roots_cb(
+                    ctx: Any,
+                ) -> mcp_types.ListRootsResult:
+                    callback_invocations.append(world_root)
+                    return mcp_types.ListRootsResult(
+                        roots=[
+                            mcp_types.Root(
+                                uri=f"file://{world_root}",  # type: ignore[arg-type]
+                                name="fixture",
+                            )
+                        ]
+                    )
+
+                server = build_server()
+
+                # Register a probe tool BEFORE the in-memory session
+                # spins up. The probe reads AppContext from the
+                # lifespan result and stashes it onto the shared dict
+                # so the test can assert on it without worrying about
+                # dict-vs-TextContent serialization quirks in FastMCP's
+                # tool-result wrapping.
+                captured: dict[str, Any] = {}
+
+                @server.tool(name="_probe")
+                async def probe() -> dict[str, Any]:
+                    ctx = server.get_context()
+                    app_ctx: AppContext = ctx.request_context.lifespan_context
+                    captured["world_root"] = app_ctx.world_root
+                    captured["roots_discovery_attempted"] = (
+                        app_ctx.roots_discovery_attempted
+                    )
+                    captured["active_session"] = app_ctx.active_session
+                    return {"ok": True}
+
+                async with create_connected_server_and_client_session(
+                    server,
+                    list_roots_callback=list_roots_cb,
+                    client_info=mcp_types.Implementation(
+                        name="alive-mcp-roots-harness",
+                        version="0.0.0",
+                    ),
+                    read_timeout_seconds=timedelta(seconds=10),
+                ) as client:
+                    # The ``initialized`` notification is dispatched as
+                    # a background task in the server's task group; it
+                    # may not have completed by the time
+                    # ``client.initialize()`` returns. A short sleep
+                    # lets the dispatch run to completion before we
+                    # probe — 250ms is orders of magnitude more than
+                    # the actual round-trip on an in-memory stream.
+                    await asyncio.sleep(0.25)
+
+                    await client.call_tool("_probe", arguments={})
+
+                    # Strongest assertion: the client-side callback
+                    # actually ran. This can only happen if the server
+                    # issued a ``roots/list`` request — i.e. the Roots
+                    # API path in the server is wired correctly.
+                    self.assertEqual(
+                        len(callback_invocations),
+                        1,
+                        msg=(
+                            "client list_roots callback did not fire. "
+                            "The server never issued roots/list."
+                        ),
+                    )
+
+                    self.assertEqual(
+                        captured.get("world_root"),
+                        world_root,
+                        msg=(
+                            "server resolved world_root to "
+                            f"{captured.get('world_root')!r} instead of "
+                            f"{world_root!r} after Roots round-trip."
+                        ),
+                    )
+                    self.assertTrue(captured["roots_discovery_attempted"])
+                    self.assertIsNotNone(captured["active_session"])
+
+        asyncio.run(run())
 
 
 class RootsApiSurfaceTests(unittest.TestCase):

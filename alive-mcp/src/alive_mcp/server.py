@@ -99,6 +99,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import sys
+import urllib.parse
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from typing import Any, AsyncIterator, Optional
@@ -123,12 +124,14 @@ from alive_mcp.world import discover_world
 #: (the suffix is redundant inside an MCP handshake).
 APP_NAME = "alive"
 
-#: Protocol version the v0.1 feature-set targets. The SDK negotiates up to
-#: the client's requested version if it appears in
-#: :data:`mcp.shared.version.SUPPORTED_PROTOCOL_VERSIONS`, so pinning 06-18
-#: means "we implement at least the 06-18 schema; newer clients get newer
-#: fields the SDK knows how to add". 06-18 is the floor for structured tool
-#: output, which the envelope layer (T4) already targets.
+#: Protocol version the v0.1 feature-set targets. This is an ADVISORY
+#: constant — the SDK controls the actual negotiation: on
+#: ``initialize`` it echoes the client's requested ``protocolVersion``
+#: if it appears in :data:`mcp.shared.version.SUPPORTED_PROTOCOL_VERSIONS`
+#: (which includes ``2025-06-18``), otherwise it falls back to
+#: :data:`mcp.types.LATEST_PROTOCOL_VERSION`. Tests use this constant
+#: as the expected response value. If a future SDK adds a server-side
+#: minimum-version knob, this constant becomes the enforcement input.
 PROTOCOL_VERSION_PINNED = "2025-06-18"
 
 #: Default audit queue depth. The writer (T12) drains this; if the writer
@@ -192,6 +195,15 @@ class AppContext:
     #: ``initialized`` notification (shouldn't happen per the MCP spec,
     #: but belt-and-suspenders).
     roots_discovery_attempted: bool = False
+
+    #: The active :class:`ServerSession`, captured during the first
+    #: ``_handle_message`` dispatch (see :func:`_install_session_capture`).
+    #: MCP notifications fire outside a bound request-context, so the
+    #: low-level ``request_ctx`` contextvar is unset when the
+    #: ``initialized`` or ``roots/list_changed`` handlers run. We
+    #: therefore stash the session here via a ``_handle_message`` wrapper
+    #: and read it from the notification handlers.
+    active_session: Optional[Any] = None
 
 
 # -----------------------------------------------------------------------------
@@ -301,30 +313,30 @@ def _install_capability_override(server: FastMCP[Any]) -> None:
 def _configure_logging(level: int = logging.INFO) -> None:
     """Route all Python logging to stderr at the given level.
 
-    Idempotent: if ``basicConfig`` already configured a stream handler,
-    this function only adjusts the level. That matters because the mcp
-    SDK calls ``logging.getLogger(__name__)`` at import time, and if a
-    test imports ``alive_mcp.server`` then re-imports it (via
-    ``importlib.reload``) we don't want to stack handlers.
+    Uses ``logging.basicConfig(..., force=True)`` so any pre-existing
+    handlers — including ones a host process or a dep installed before
+    we were imported — are REPLACED with a single stderr handler. This
+    is load-bearing: an embedded stdout handler (e.g. a notebook
+    integration's default) would contaminate the JSON-RPC frame channel
+    and make the server silently unusable. The safe default is "one
+    stderr handler, no matter what came before."
+
+    ``force=True`` is available since Python 3.8; our floor is 3.10, so
+    this is unconditionally safe. We re-call basicConfig on every
+    invocation because the function is cheap and the "own-the-handler"
+    invariant is more important than idempotence.
 
     stderr is the MCP stdio transport's out-of-band channel: JSON-RPC
-    rides stdout, human-readable diagnostics ride stderr. Writing logs to
-    stdout would corrupt framing and is the #1 reason stdio MCP servers
-    fail silently — hence this function exists at all.
+    rides stdout, human-readable diagnostics ride stderr. Writing logs
+    to stdout would corrupt framing and is the #1 reason stdio MCP
+    servers fail silently.
     """
-    root = logging.getLogger()
-    has_stream_handler = any(
-        isinstance(h, logging.StreamHandler) and h.stream is sys.stderr
-        for h in root.handlers
+    logging.basicConfig(
+        stream=sys.stderr,
+        level=level,
+        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+        force=True,
     )
-    if not has_stream_handler:
-        logging.basicConfig(
-            stream=sys.stderr,
-            level=level,
-            format="%(asctime)s %(levelname)s %(name)s: %(message)s",
-        )
-    else:
-        root.setLevel(level)
 
 
 # -----------------------------------------------------------------------------
@@ -363,6 +375,49 @@ async def _audit_writer_stub(queue: asyncio.Queue[Any]) -> None:
 # -----------------------------------------------------------------------------
 
 
+def _file_uri_to_path(uri: str) -> Optional[str]:
+    """Parse an MCP ``file://`` root URI into a local absolute path.
+
+    Handles the shapes real MCP clients emit in the wild:
+
+    * ``file:///Users/patrick/world`` — the canonical POSIX shape.
+    * ``file://localhost/Users/patrick/world`` — accepted by the URI
+      spec (RFC 8089). Treated as equivalent to ``file:///...``.
+    * ``file:///Users/patrick/my%20world`` — percent-encoded spaces
+      and unicode. :func:`urllib.parse.unquote` normalizes these.
+
+    Non-``file://`` URIs (``http://``, custom schemes) return ``None``
+    and the caller logs a warning — v0.1 only supports local roots.
+    Unexpected URI shapes (``file://`` with a non-local host, missing
+    path, etc.) also return ``None``.
+
+    Returns the absolute local path (percent-decoded), or ``None`` if
+    the URI cannot be safely parsed.
+    """
+    try:
+        parts = urllib.parse.urlsplit(uri)
+    except ValueError:
+        return None
+
+    if parts.scheme != "file":
+        return None
+
+    # RFC 8089: ``file://<host>/<path>`` where <host> is empty or
+    # "localhost" means "local filesystem". Any other host is a remote
+    # resource we can't access.
+    host = parts.netloc
+    if host not in ("", "localhost"):
+        return None
+
+    # Percent-decode the path component. An empty path ("file://")
+    # with no segments is malformed for our purposes — bail.
+    path = urllib.parse.unquote(parts.path)
+    if not path:
+        return None
+
+    return path
+
+
 async def _discover_world_with_roots(
     app_context: AppContext,
     session: Any,
@@ -390,34 +445,20 @@ async def _discover_world_with_roots(
         )
     else:
         # ``result.roots`` is a list of :class:`types.Root`. Each has a
-        # ``uri`` that is a ``file://`` URL per the MCP spec. Extract the
-        # local path and let :func:`discover_world` do the predicate
+        # ``uri`` that is a ``file://`` URL per the MCP spec. Extract
+        # the local path and let :func:`discover_world` do the predicate
         # matching.
         for root in result.roots:
             uri = str(root.uri)
-            if uri.startswith("file://"):
-                # Strip the ``file://`` scheme. Don't attempt percent-
-                # decoding here — :mod:`urllib.parse` handles edge cases
-                # (spaces, unicode) but the MCP spec permits only
-                # well-formed absolute POSIX paths, so the naive strip
-                # is adequate for v0.1.
-                path = uri[len("file://") :]
-                # Some clients send ``file:///Users/...``; strip a single
-                # leading slash off the host component if present.
-                # ``urlsplit`` would handle this, but the bare strip keeps
-                # the dependency surface small.
-                if path.startswith("/"):
-                    roots.append(path)
-                else:
-                    # ``file://Users/...`` — rare, malformed, but be
-                    # permissive and pass through.
-                    roots.append(path)
-            else:
+            path = _file_uri_to_path(uri)
+            if path is None:
                 logger.warning(
-                    "ignoring non-file:// root uri %r (only file:// is "
-                    "supported in v0.1)",
+                    "ignoring unsupported root uri %r (only local "
+                    "file:// roots are supported in v0.1)",
                     uri,
                 )
+                continue
+            roots.append(path)
 
     try:
         resolved = discover_world(roots=roots)
@@ -438,6 +479,56 @@ async def _discover_world_with_roots(
                 app_context.world_root,
             )
         app_context.world_root = resolved
+
+
+def _install_session_capture(
+    server: FastMCP[Any], app_context: AppContext
+) -> None:
+    """Wrap the low-level ``_handle_message`` so each dispatch captures the session.
+
+    Notifications (``initialized``, ``roots/list_changed``) fire via
+    :meth:`Server._handle_notification`, which takes only the
+    notification payload — the active :class:`ServerSession` is NOT
+    threaded through. The low-level ``request_ctx`` contextvar is only
+    bound during request handling, never during notification handling.
+
+    To let the ``initialized`` handler call ``session.list_roots()``,
+    we need a side channel from the dispatch layer (which has the
+    session) to the handler (which does not). The cheapest reliable
+    side channel is to wrap :meth:`Server._handle_message` — the
+    dispatch method receives ``session`` as a parameter on every call.
+    We stash it on :attr:`AppContext.active_session` so the
+    notification handlers can pick it up.
+
+    The wrapper is installed once per lifespan entry and removed on
+    exit (best-effort — the server process typically exits right
+    after lifespan teardown, so a leaked wrapper is harmless). The
+    wrapper preserves the original method's signature exactly so any
+    future SDK-level change to `_handle_message` is surfaced by a
+    TypeError at the wrapper boundary rather than silently breaking.
+
+    Forward-compat note: if ``mcp`` ever adds a public hook for
+    "dispatch starts" (e.g. middleware), this wrapper becomes
+    obsolete and can be replaced with the supported extension point.
+    """
+    original = server._mcp_server._handle_message
+
+    async def _wrapped(
+        message: Any,
+        session: Any,
+        lifespan_context: Any,
+        raise_exceptions: bool = False,
+    ) -> None:
+        # Capture on EVERY dispatch, not just the first — a client that
+        # reconnects within the same server run would bind a fresh
+        # session. The stdio transport in v0.1 only has one session per
+        # run, but the shape is forward-compatible.
+        app_context.active_session = session
+        await original(message, session, lifespan_context, raise_exceptions)
+
+    # Bind to the instance, not the class. Other servers constructed
+    # from the same SDK are unaffected.
+    server._mcp_server._handle_message = _wrapped  # type: ignore[method-assign]
 
 
 # -----------------------------------------------------------------------------
@@ -504,23 +595,27 @@ async def lifespan(server: FastMCP[AppContext]) -> AsyncIterator[AppContext]:
     observer.start()
     app_context.observer = observer
 
-    # Step 5: notification handlers. The low-level server's
+    # Step 5a: install the session-capture wrapper BEFORE the handlers
+    # that depend on :attr:`AppContext.active_session`. The wrapper
+    # intercepts every ``_handle_message`` call and stashes the session
+    # onto the context so notification handlers can reach it.
+    _install_session_capture(server, app_context)
+
+    # Step 5b: notification handlers. The low-level server's
     # ``notification_handlers`` dict is a public-by-convention field
     # (per :mod:`mcp.server.lowlevel.server` line 159) that routes
-    # incoming client notifications. We register two handlers:
+    # incoming client notifications. The handlers read the session from
+    # :attr:`AppContext.active_session` (populated by the capture
+    # wrapper) because notification dispatch does not bind
+    # ``request_ctx`` or pass a session argument.
     async def _on_initialized(
         notify: mcp_types.InitializedNotification,
     ) -> None:
-        # ``request_context`` is a contextvar bound per-request. Inside a
-        # notification handler FastMCP does NOT bind it — notifications
-        # don't have request IDs. We therefore reach the active session
-        # via the low-level Server's own reference, which we stored on
-        # ``app_context`` for exactly this purpose.
-        session = _get_active_session(server)
-        if session is None:  # pragma: no cover — shouldn't happen.
+        session = app_context.active_session
+        if session is None:  # pragma: no cover — capture runs first.
             logger.warning(
                 "initialized notification fired but no active session "
-                "found; skipping Roots discovery"
+                "captured; skipping Roots discovery"
             )
             return
         await _discover_world_with_roots(app_context, session)
@@ -533,7 +628,7 @@ async def lifespan(server: FastMCP[AppContext]) -> AsyncIterator[AppContext]:
             # initialized. If they do, the ``initialized`` handler will
             # pick up the new roots when it fires — no action needed.
             return
-        session = _get_active_session(server)
+        session = app_context.active_session
         if session is None:  # pragma: no cover
             return
         await _discover_world_with_roots(app_context, session)
@@ -582,48 +677,24 @@ async def lifespan(server: FastMCP[AppContext]) -> AsyncIterator[AppContext]:
         logger.info("alive-mcp v%s stopped", __version__)
 
 
-def _get_active_session(server: FastMCP[Any]) -> Optional[Any]:
-    """Return the active :class:`ServerSession`, or None if not bound.
+async def _ensure_roots_discovered(app_context: AppContext) -> None:
+    """Trigger Roots discovery lazily on first demand.
 
-    FastMCP exposes the session indirectly via the ``request_context``
-    contextvar (bound per-request). Notification handlers fire outside
-    a request, so the contextvar is unbound. We fall back to the
-    low-level server's ``request_context`` property which raises
-    ``LookupError`` in the same situation — in that case we return None
-    and the caller logs a warning.
+    Reads :attr:`AppContext.active_session` (populated by the capture
+    wrapper installed in the lifespan) and runs Roots + env discovery
+    if it has not already run. No-op after the first successful call.
 
-    In practice the ``initialized`` notification fires during the
-    session's lifecycle but before any request, so this function needs a
-    non-request path to the session. The python-sdk does not expose one
-    directly; the caller's notification ALREADY has access to the
-    session via the lowlevel ``_handle_message`` call chain, but that
-    frame is not reachable from our registered callback. For v0.1 we
-    accept that limitation and document it: Roots discovery happens on
-    the FIRST TOOL CALL instead (see :func:`_ensure_roots_discovered`).
-    """
-    try:
-        request_context = server._mcp_server.request_context
-    except LookupError:
-        return None
-    return request_context.session
-
-
-async def _ensure_roots_discovered(
-    app_context: AppContext,
-    session: Any,
-) -> None:
-    """Trigger Roots discovery lazily on the first request that needs it.
-
-    Because notification handlers do not have access to the active
-    session in ``mcp>=1.27,<2.0`` (see :func:`_get_active_session`),
-    we trigger Roots discovery from the first tool/resource request
-    that lands. Tools in T6+ should call this helper at the top of
-    their handler; it is a no-op after the first call.
-
-    This function is a public seam for T6+ to use — keeping it here
-    means T6 does not have to re-derive the Roots logic.
+    This is a public seam for T6+ tools to call at the top of their
+    handler. The normal discovery path is the
+    ``initialized``-notification handler; this helper is a safety net
+    for the (rare) case where a tool fires before ``initialized`` is
+    processed (shouldn't happen per the MCP spec, but belt-and-
+    suspenders: the client could interleave messages aggressively).
     """
     if app_context.roots_discovery_attempted:
+        return
+    session = app_context.active_session
+    if session is None:  # pragma: no cover — capture runs before tools.
         return
     await _discover_world_with_roots(app_context, session)
 
