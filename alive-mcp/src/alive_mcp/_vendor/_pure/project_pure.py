@@ -280,6 +280,11 @@ def scan_bundles(walnut: str) -> Dict[str, Dict[str, Any]]:
                 inside_nested = True
                 break
         if inside_nested:
+            # Boundary-detection below already sets ``dirs[:] = []`` when
+            # the boundary is first crossed, so this branch is typically
+            # unreachable. Clear ``dirs`` defensively so a future change
+            # that lands us here can't accidentally descend.
+            dirs[:] = []
             continue
 
         # Nested walnut detection: check the filesystem directly rather
@@ -344,7 +349,10 @@ def parse_manifest(filepath: str) -> Optional[Dict[str, Any]]:
             content, re.MULTILINE
         )
         if ctx_simple:
-            result["context"] = ctx_simple.group(1)
+            # Symmetry with the other scalar fields and the block form:
+            # strip so trailing whitespace/newlines can't leak into
+            # projections.
+            result["context"] = ctx_simple.group(1).strip()
 
     sessions: List[str] = []
     sq_match = re.search(

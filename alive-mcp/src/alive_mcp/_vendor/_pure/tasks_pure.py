@@ -137,6 +137,18 @@ def _read_tasks_json(path: str) -> Optional[Dict[str, Any]]:
             stacklevel=2,
         )
         return None
+    if not isinstance(data["tasks"], list):
+        # Guard against schema drift -- a scalar or dict under ``tasks``
+        # would crash the caller's ``list.extend()`` downstream. Emit the
+        # same warning as other shape failures and skip the file.
+        warnings.warn(
+            "malformed {} ('tasks' is {}, expected list)".format(
+                path, type(data["tasks"]).__name__
+            ),
+            MalformedYAMLWarning,
+            stacklevel=2,
+        )
+        return None
     return data
 
 
@@ -167,6 +179,15 @@ def _read_completed_json(path: str) -> Dict[str, Any]:
     if not isinstance(data, dict) or "completed" not in data:
         warnings.warn(
             "malformed {} (missing 'completed' key)".format(path),
+            MalformedYAMLWarning,
+            stacklevel=2,
+        )
+        return {"completed": []}
+    if not isinstance(data["completed"], list):
+        warnings.warn(
+            "malformed {} ('completed' is {}, expected list)".format(
+                path, type(data["completed"]).__name__
+            ),
             MalformedYAMLWarning,
             stacklevel=2,
         )

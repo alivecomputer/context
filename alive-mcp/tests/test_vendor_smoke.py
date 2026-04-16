@@ -56,17 +56,27 @@ SRC_ROOT = pathlib.Path(__file__).parent.parent / "src"
 # When the sentinel isn't found within 8 ancestors, the byte-identity test
 # skips -- tarball installs and tests-in-isolation legitimately don't have
 # the plugin tree alongside.
-_SENTINEL = pathlib.Path("plugins") / "alive" / "scripts" / "walnut_paths.py"
+# Two candidate suffixes per ancestor -- the monorepo uses the
+# ``claude-code/`` prefix in its canonical path (per VENDORING.md), but
+# future repo reshufflings or flattened vendor tests might land alongside
+# a bare ``plugins/...`` tree. Trying both keeps the test robust.
+_SENTINEL_SUFFIXES = (
+    pathlib.Path("claude-code") / "plugins" / "alive" / "scripts" / "walnut_paths.py",
+    pathlib.Path("plugins") / "alive" / "scripts" / "walnut_paths.py",
+)
 
 
 def _find_upstream_walnut_paths() -> pathlib.Path | None:
     here = pathlib.Path(__file__).resolve()
-    # Check ``here`` plus up to 8 ancestors -- enough for any plausible
-    # monorepo layout without being so deep it starts hitting / .
+    # Walk ``here`` plus up to 8 ancestors, trying each sentinel suffix.
+    # 8 is enough for any plausible monorepo layout (main checkout, a
+    # worktree one level deep, a worktree of a worktree) without being
+    # so deep it hits filesystem root on short paths.
     for ancestor in [here, *here.parents][:9]:
-        candidate = ancestor / _SENTINEL
-        if candidate.is_file():
-            return candidate
+        for suffix in _SENTINEL_SUFFIXES:
+            candidate = ancestor / suffix
+            if candidate.is_file():
+                return candidate
     return None
 
 
@@ -424,6 +434,52 @@ class ScanBundlesHonorsNestedWalnutBoundaries(unittest.TestCase):
                 msg="child walnut's bundles leaked into parent scan: {!r}".format(
                     list(result.keys())
                 ),
+            )
+
+
+class TasksJsonSchemaIsValidated(unittest.TestCase):
+    """Regression: ``_read_tasks_json`` must reject non-list ``tasks``.
+
+    Without the ``isinstance(data["tasks"], list)`` guard, a walnut with
+    ``tasks.json`` holding ``{"tasks": "oops"}`` or similar would crash
+    the caller's ``list.extend()`` path or silently yield nonsense.
+    """
+
+    def test_non_list_tasks_field_is_rejected_with_warning(self) -> None:
+        import tempfile
+        import warnings as warnings_mod
+
+        from alive_mcp._vendor._pure import MalformedYAMLWarning, tasks_pure
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            walnut = pathlib.Path(tmpdir) / "walnut"
+            walnut_kernel = walnut / "_kernel"
+            walnut_kernel.mkdir(parents=True)
+            (walnut_kernel / "key.md").write_text("---\ntype: experiment\n---\n")
+
+            # Schema drift: ``tasks`` is a string, not a list.
+            (walnut_kernel / "tasks.json").write_text('{"tasks": "oops"}')
+
+            with warnings_mod.catch_warnings(record=True) as caught:
+                warnings_mod.simplefilter("always")
+                collected = tasks_pure._collect_all_tasks(str(walnut))
+
+            self.assertEqual(
+                collected, [],
+                msg="non-list tasks field leaked into results: {!r}".format(
+                    collected
+                ),
+            )
+            self.assertTrue(
+                any(
+                    issubclass(w.category, MalformedYAMLWarning)
+                    and "'tasks' is str" in str(w.message)
+                    for w in caught
+                ),
+                msg=(
+                    "expected MalformedYAMLWarning about non-list 'tasks'; "
+                    "got {!r}"
+                ).format([str(w.message) for w in caught]),
             )
 
 
