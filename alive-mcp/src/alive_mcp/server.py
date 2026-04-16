@@ -133,10 +133,17 @@ from typing import Any, AsyncIterator, Optional  # noqa: E402
 from mcp import types as mcp_types  # noqa: E402
 from mcp.server.fastmcp import FastMCP  # noqa: E402
 from mcp.server.lowlevel.server import NotificationOptions  # noqa: E402
-from watchdog.observers import Observer  # noqa: E402
+from pydantic import AnyUrl  # noqa: E402
+from watchdog.observers.api import BaseObserver  # noqa: E402
 
 from alive_mcp import __version__  # noqa: E402
 from alive_mcp.errors import WorldNotFoundError  # noqa: E402
+from alive_mcp.resources.subscriptions import (  # noqa: E402
+    KernelEventHandler,
+    SubscriptionRegistry,
+    register_subscribe_handlers,
+    start_observer,
+)
 from alive_mcp.world import discover_world  # noqa: E402
 
 
@@ -213,11 +220,29 @@ class AppContext:
     #: with the real writer.
     audit_writer_task: Optional[asyncio.Task[None]] = None
 
-    #: watchdog ``Observer`` instance. Started in lifespan even though no
-    #: watches are registered yet (T11 wires the per-walnut watches) — the
-    #: observer thread is cheap and starting it unconditionally keeps the
-    #: lifespan shape identical between v0.1 (no subscriptions) and v0.2.
-    observer: Optional[Observer] = None
+    #: watchdog ``Observer`` instance. Wired up once the World root is
+    #: resolved (either via env fallback at startup or via Roots after
+    #: ``initialized``). The observer owns a single recursive watch on
+    #: the World root and runs for the lifetime of the server process.
+    #: See :mod:`alive_mcp.resources.subscriptions` for rationale on
+    #: "single long-running observer" vs lazy-on-subscribe.
+    observer: Optional[BaseObserver] = None
+
+    #: Kernel-file event handler attached to :attr:`observer`. Retained
+    #: on the context so the lifespan teardown can cancel its pending
+    #: debounce timers BEFORE the event loop closes -- otherwise a
+    #: timer scheduled at t=T-100ms would fire post-shutdown and reach
+    #: into a torn-down session.
+    observer_handler: Optional[KernelEventHandler] = None
+
+    #: Per-URI subscriber registry. Populated by the
+    #: ``resources/subscribe`` handler; consulted by the observer's
+    #: emission path. Created eagerly on AppContext construction so
+    #: the subscribe handler can safely dereference it before the
+    #: observer has started.
+    subscription_registry: SubscriptionRegistry = field(
+        default_factory=SubscriptionRegistry
+    )
 
     #: True once we have attempted post-``initialized`` Roots discovery at
     #: least once. Used to suppress redundant discovery on every
@@ -586,13 +611,146 @@ async def _discover_world_with_roots(
         # Keep existing world_root if we had one; drop to None if we
         # didn't. This matches the spec's "degrade gracefully" posture.
     else:
-        if resolved != app_context.world_root:
+        previous = app_context.world_root
+        if resolved != previous:
             logger.info(
                 "World resolved to %r (previous: %r)",
                 resolved,
-                app_context.world_root,
+                previous,
             )
         app_context.world_root = resolved
+        # T11: (re)start the subscription-aware observer for the
+        # resolved World root. If the world changed across a Roots
+        # update (rare but possible), tear the old observer down
+        # first so we don't leak an FSEvents subscription on a stale
+        # path. Errors starting the observer are logged but NOT
+        # re-raised -- resource subscriptions degrade gracefully when
+        # filesystem watching is unavailable (tools and non-subscribed
+        # reads still work).
+        if resolved != previous or app_context.observer is None:
+            _restart_observer(app_context, resolved)
+
+
+def _stop_observer(app_context: AppContext) -> None:
+    """Stop + join the current observer, cancelling pending debounce timers.
+
+    Called from both the shutdown path and the world-change path in
+    :func:`_discover_world_with_roots`. Every step is wrapped in its
+    own try/except because:
+
+    * ``cancel_pending`` runs on the loop thread and touches a plain
+      dict -- hard to fail, but a closed loop or a concurrent
+      mutation could surface an error we'd rather log than crash on.
+    * ``observer.stop()`` signals the emitter thread to exit; it can
+      raise if the thread is already dead.
+    * ``observer.join(timeout)`` blocks until the emitter finishes or
+      the timeout expires. The ``daemon=True`` flag on the observer
+      thread means a hang here only delays shutdown; it never blocks
+      interpreter exit.
+
+    All three steps are best-effort -- lifespan teardown must always
+    make progress.
+    """
+    if app_context.observer_handler is not None:
+        try:
+            app_context.observer_handler.cancel_pending()
+        except Exception:  # noqa: BLE001
+            logger.exception("observer handler cancel_pending failed")
+        app_context.observer_handler = None
+    if app_context.observer is not None:
+        try:
+            app_context.observer.stop()
+            app_context.observer.join(timeout=1.0)
+        except Exception:  # noqa: BLE001
+            logger.exception("watchdog observer shutdown failed")
+        app_context.observer = None
+
+
+def _restart_observer(
+    app_context: AppContext,
+    world_root: str,
+) -> None:
+    """Start a new observer for ``world_root``, stopping any existing one.
+
+    Called when:
+
+    * The env-only discovery at lifespan entry resolved a World (the
+      ``session`` argument is None in this case -- notification
+      callbacks will skip until the ``initialized`` notification
+      populates :attr:`AppContext.active_session`).
+    * Roots discovery resolves a different world than the
+      currently-watched one (the session is captured at the time of
+      the Roots callback).
+    * An observer has not been started yet at discovery time.
+
+    The notification callbacks read :attr:`AppContext.active_session`
+    at emit time rather than closing over the session passed in here.
+    Rationale: a client that disconnects and reconnects mid-lifespan
+    (rare on stdio, normal on long-running SSE) would bind a fresh
+    session; reading lazily from the context always targets whichever
+    session is currently bound. If the context has no session yet
+    (pre-``initialized``), the callback silently no-ops -- the debounce
+    layer has already dropped the notification on the "no subscribers"
+    check by that point anyway.
+
+    Errors during observer startup are logged and leave the observer
+    unset -- resource-subscription delivery degrades silently to "no
+    notifications," but tools and non-subscribed reads keep working.
+    """
+    _stop_observer(app_context)
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        # Called outside a running loop (shouldn't happen from the
+        # Roots handler or the lifespan body, both of which run on
+        # the loop). Skip rather than crash.
+        logger.warning(
+            "cannot start observer: no running event loop at "
+            "discovery time"
+        )
+        return
+
+    async def _notify_updated(uri: str) -> None:
+        """Coroutine invoked by the observer to fire ``resources/updated``.
+
+        Runs on the event loop. Looks up the currently-bound session
+        on the context (not a closed-over reference) so a post-connect
+        reconnect targets the fresh session. If no session is bound
+        yet (pre-``initialized``), the call is silently skipped --
+        subscribe cannot have happened yet, so the subscriber filter
+        would have dropped this anyway; the explicit guard avoids a
+        NoneType crash in the rare race where a stale FS event is
+        dispatched during initialize.
+        """
+        active = app_context.active_session
+        if active is None:
+            return
+        await active.send_resource_updated(AnyUrl(uri))
+
+    async def _notify_list_changed() -> None:
+        """Coroutine invoked by the observer to fire ``list_changed``."""
+        active = app_context.active_session
+        if active is None:
+            return
+        await active.send_resource_list_changed()
+
+    try:
+        observer, handler = start_observer(
+            world_root=world_root,
+            loop=loop,
+            registry=app_context.subscription_registry,
+            notify_updated=_notify_updated,
+            notify_list_changed=_notify_list_changed,
+        )
+    except Exception:  # noqa: BLE001
+        logger.exception(
+            "failed to start watchdog observer on %r; resource "
+            "subscriptions will not deliver notifications",
+            world_root,
+        )
+        return
+    app_context.observer = observer
+    app_context.observer_handler = handler
 
 
 def _install_session_capture(
@@ -700,14 +858,30 @@ async def lifespan(server: FastMCP[AppContext]) -> AsyncIterator[AppContext]:
         name="alive-mcp.audit_writer_stub",
     )
 
-    # Step 4: watchdog Observer. Start unconditionally — the thread is
-    # idle without watches registered, and starting here keeps the v0.1
-    # lifespan shape identical to the v0.2 shape that will register
-    # walnut-inventory watches in T11.
-    observer = Observer()
-    observer.daemon = True  # don't block process shutdown.
-    observer.start()
-    app_context.observer = observer
+    # Step 4: watchdog Observer. Start the subscription-aware observer
+    # IFF env-only discovery resolved a World root; otherwise the
+    # observer is deferred until ``_discover_world_with_roots`` runs
+    # after ``initialized``. Starting the observer without a known
+    # World root would be meaningless -- there would be no tree to
+    # watch. The subscription registry exists either way so the
+    # ``resources/subscribe`` handler can record subscribers before
+    # the observer has started; once the observer comes up, its
+    # emissions consult the already-populated registry.
+    if app_context.world_root is not None:
+        _restart_observer(app_context, app_context.world_root)
+
+    # Step 4b: ``resources/subscribe`` + ``resources/unsubscribe``
+    # request handlers. These must be installed regardless of World
+    # discovery state -- a client may subscribe before the Observer
+    # has started; the registry simply remembers the subscription and
+    # the Observer picks it up on the next emission (or never, if the
+    # World never resolves -- subscribing to a nonexistent World is
+    # the client's responsibility to diagnose via the tool surface).
+    register_subscribe_handlers(
+        server,
+        app_context.subscription_registry,
+        session_getter=lambda: app_context.active_session,
+    )
 
     # Step 5a: runtime Roots API validation. The T5 spec requires us
     # to VERIFY the SDK actually exposes both halves of the Roots
@@ -796,19 +970,13 @@ async def lifespan(server: FastMCP[AppContext]) -> AsyncIterator[AppContext]:
     try:
         yield app_context
     finally:
-        # Shutdown order: observer first (stops filesystem events), then
-        # audit writer (drains any final queue entries). Each step is
-        # wrapped in try/except because the MCP framework treats lifespan
-        # teardown as best-effort.
-        try:
-            if app_context.observer is not None:
-                app_context.observer.stop()
-                # join() with a short timeout — the daemon=True flag
-                # guarantees the thread won't block interpreter exit, so
-                # a hang here would only delay shutdown logging.
-                app_context.observer.join(timeout=1.0)
-        except Exception:  # noqa: BLE001 — logged, not raised.
-            logger.exception("watchdog observer shutdown failed")
+        # Shutdown order: observer first (stops filesystem events +
+        # cancels pending debounce timers), then audit writer (drains
+        # any final queue entries). Each step is wrapped in its own
+        # try/except because the MCP framework treats lifespan
+        # teardown as best-effort. ``_stop_observer`` handles the
+        # cancel_pending + stop + join sequence uniformly.
+        _stop_observer(app_context)
 
         try:
             if app_context.audit_writer_task is not None:
