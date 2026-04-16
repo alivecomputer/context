@@ -15,14 +15,6 @@ flat bundles at walnut root, v2 ``bundles/`` containers, and v1
 ``_core/_capsules/`` legacy capsules.
 
 Stdlib only. No PyYAML. Type hints use the ``typing`` module (3.9 floor).
-
--- VENDOR NOTE --
-This file is a VERBATIM copy of ``plugins/alive/scripts/walnut_paths.py``
-from the ``alivecontext/alive`` monorepo, vendored on 2026-04-16 per the
-``alive-mcp`` v0.1 plan (fn-10-60k.2). It is already library-safe (no print,
-no sys.exit). See ``VENDORING.md`` in this directory for the source commit
-hash and refresh policy. DO NOT edit locally -- refresh by re-copying from
-upstream and updating ``VENDORING.md``.
 """
 
 import os

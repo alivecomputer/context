@@ -34,12 +34,24 @@ expected -- T2 vendors it directly from `main`.
 
 ## Direct copy
 
-One file is vendored verbatim because it was purpose-built as a library
-(docstring declares the public API, zero `print()`, zero `sys.exit()`):
+One file is vendored verbatim -- byte-for-byte identical to upstream --
+because it was purpose-built as a library (docstring declares the public
+API, zero `print()`, zero `sys.exit()`):
 
 - `walnut_paths.py` -- bundle path resolution and discovery. Layout-agnostic
   across v1 (`_core/_capsules/`), v2 (`bundles/`), and v3 (flat) walnuts.
   Stdlib only.
+
+"Byte-for-byte identical" means `diff` returns zero bytes against the
+upstream source at the pinned commit. `tests/test_vendor_smoke.py` asserts
+this on every run so drift surfaces immediately -- see
+`DirectCopyIsByteIdentical`. All vendor notes for this file live in this
+document; NOTHING is added to or removed from the file itself. When the
+upstream path isn't available at test time (typical for a CI run where the
+alive-mcp package ships without the ALIVE plugin tree alongside), the
+byte-identity test is skipped rather than failed -- the `diff` must run in
+environments where both files are accessible (contributor checkouts of the
+monorepo, or the vendor-refresh workflow).
 
 ## Extract-to-pure
 

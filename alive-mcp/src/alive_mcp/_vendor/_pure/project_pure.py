@@ -45,6 +45,7 @@ Stdlib only. No PyYAML. 3.10 floor (matches pyproject ``requires-python``).
 """
 from __future__ import annotations
 
+import errno
 import json
 import os
 import re
@@ -87,9 +88,19 @@ def parse_log(walnut: str) -> Dict[str, Any]:
     try:
         with open(log_path, "r", encoding="utf-8") as f:
             content = f.read()
-    except (IOError, OSError, UnicodeDecodeError) as exc:
+    except OSError as exc:
+        # A TOCTOU race between the ``isfile`` check above and ``open`` can
+        # surface as ``ENOENT`` -- the log was deleted between the two calls.
+        # Treat that the same as the "file never existed" branch so the
+        # "missing log is non-error" contract holds under concurrency.
+        if getattr(exc, "errno", None) == errno.ENOENT:
+            return _empty_log_data()
         raise KernelFileError(
             "cannot read {}: {}".format(log_path, exc)
+        ) from exc
+    except UnicodeDecodeError as exc:
+        raise KernelFileError(
+            "cannot decode {}: {}".format(log_path, exc)
         ) from exc
 
     # Skip YAML frontmatter
@@ -526,9 +537,15 @@ def _extract_yaml_field(content: str, field: str) -> Optional[str]:
 def scan_nested_walnuts(walnut: str) -> Dict[str, Dict[str, Any]]:
     """Find nested walnuts (one level deep) and read their ``now.json``.
 
-    Returns a dict keyed by child directory name. Unreadable child
-    ``now.json`` files emit ``MalformedYAMLWarning`` and are omitted from
-    the result with a placeholder ``{phase: unknown, next: None, updated: None}``.
+    Returns a dict keyed by child directory name. Every child walnut that
+    has a ``_kernel/key.md`` appears in the result. When the child's
+    ``now.json`` is unreadable or malformed, the child is still included
+    with placeholder fields ``{phase: "unknown", next: None, updated: None}``
+    and a ``MalformedYAMLWarning`` is emitted via the ``warnings`` module.
+    This matches the upstream contract in ``project.py::scan_nested_walnuts``
+    -- the parent projection wants to know a child exists even when its
+    state file can't be read, so downstream UIs can surface "nested walnut
+    present, state unavailable" rather than silently dropping it.
     """
     children: Dict[str, Dict[str, Any]] = {}
     skip_dirs = {"_kernel", "raw", ".git", "node_modules", "__pycache__",

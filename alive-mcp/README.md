@@ -14,7 +14,11 @@ uv venv --python 3.12
 uv run alive-mcp --version        # prints 0.1.0
 uvx --from . alive-mcp --version  # same
 
-python3 -m unittest discover tests  # empty suite, exits 0
+# Tests run from a bare checkout -- tests/__init__.py adds src/ to sys.path
+# so you don't need the package installed or PYTHONPATH set.
+python3 -m unittest discover tests
+# Or, if you've already set up the uv venv:
+uv run python -m unittest discover tests
 ```
 
 Full design: `.flow/specs/fn-10-60k.md` at the walnut root.

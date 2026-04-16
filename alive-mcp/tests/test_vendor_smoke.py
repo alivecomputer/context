@@ -26,6 +26,17 @@ import subprocess
 import sys
 import unittest
 
+# Ensure ``python3 -m unittest discover tests`` works without requiring the
+# package to be installed or ``PYTHONPATH=src`` to be set. When unittest
+# discovers test modules it loads them by filename rather than as part of
+# the ``tests`` package, so ``tests/__init__.py`` alone isn't enough --
+# we need the path prepended at test-module-load time. Idempotent.
+_SRC_DIR = str(
+    pathlib.Path(__file__).resolve().parent.parent / "src"
+)
+if os.path.isdir(_SRC_DIR) and _SRC_DIR not in sys.path:
+    sys.path.insert(0, _SRC_DIR)
+
 
 FIXTURE_ROOT = pathlib.Path(__file__).parent / "fixtures" / "tiny"
 FIXTURE_WALNUT = FIXTURE_ROOT / "demo-walnut"
@@ -33,6 +44,24 @@ FIXTURE_WALNUT = FIXTURE_ROOT / "demo-walnut"
 # Path to the src/ directory so subprocesses can import alive_mcp without
 # needing the package installed in a venv.
 SRC_ROOT = pathlib.Path(__file__).parent.parent / "src"
+
+# Upstream source for the direct-copy file. When running from the monorepo
+# worktree, the path resolves -- the byte-identity test runs. When running
+# from a distributed tarball (no plugin tree alongside), the path misses
+# and the test is skipped. This is intentional per VENDORING.md.
+#
+# Path search order: plugin tree at monorepo root, then ../../plugins (in
+# case the test runs from inside a claude-code/ checkout).
+_UPSTREAM_CANDIDATES = [
+    pathlib.Path(__file__).parent.parent.parent
+    / "plugins" / "alive" / "scripts" / "walnut_paths.py",
+    pathlib.Path(__file__).parent.parent.parent.parent
+    / "plugins" / "alive" / "scripts" / "walnut_paths.py",
+]
+UPSTREAM_WALNUT_PATHS: pathlib.Path | None = next(
+    (p for p in _UPSTREAM_CANDIDATES if p.is_file()),
+    None,
+)
 
 # Source files we extracted into -- these must be scrubbed of print / exit.
 EXTRACTED_SOURCES = [
@@ -126,6 +155,40 @@ class VendorImportIsSilent(unittest.TestCase):
                          msg="combined import failed: {!r}".format(result.stderr))
         self.assertEqual(result.stdout, "")
         self.assertEqual(result.stderr, "")
+
+
+class DirectCopyIsByteIdentical(unittest.TestCase):
+    """The direct-copy file must be byte-identical to upstream.
+
+    Guards the vendoring contract stated in ``VENDORING.md``: refreshes are
+    done by re-copying the upstream file verbatim. Any edit local to
+    ``_vendor/walnut_paths.py`` that doesn't go through a refresh will
+    surface as a diff here.
+
+    Skipped when the upstream source isn't on disk (tarball install, CI
+    runner without the plugin tree alongside). The test's intent is to
+    catch drift in the contributor workflow, not to block distribution.
+    """
+
+    def test_walnut_paths_is_byte_for_byte_identical_to_upstream(self) -> None:
+        if UPSTREAM_WALNUT_PATHS is None:
+            self.skipTest(
+                "upstream plugins/alive/scripts/walnut_paths.py not found "
+                "next to alive-mcp -- skipping byte-identity check "
+                "(intended for contributor runs, not tarball installs)"
+            )
+
+        vendored = SRC_ROOT / "alive_mcp" / "_vendor" / "walnut_paths.py"
+        self.assertEqual(
+            vendored.read_bytes(),
+            UPSTREAM_WALNUT_PATHS.read_bytes(),
+            msg=(
+                "vendored walnut_paths.py diverges from upstream "
+                "({}). Direct copies must be byte-identical -- "
+                "restore by re-copying upstream and updating VENDORING.md "
+                "if upstream has moved."
+            ).format(UPSTREAM_WALNUT_PATHS),
+        )
 
 
 class ExtractedSourcesAreLibrarySafe(unittest.TestCase):
