@@ -449,6 +449,44 @@ def _file_uri_to_path(uri: str) -> Optional[str]:
     return path
 
 
+#: Timeout (seconds) for the server-initiated ``roots/list`` request.
+#: The request is synchronous — the server awaits the client's reply —
+#: so a client that ignores ``roots/list`` would otherwise block our
+#: ``initialized`` handler indefinitely. 5s is generous for a
+#: well-behaved client (in-memory + stdio both return in single-digit
+#: ms) but short enough that a bad client doesn't stall Roots
+#: discovery forever. Env-fallback kicks in on timeout.
+ROOTS_LIST_TIMEOUT_S = 5.0
+
+
+def _client_supports_roots(session: Any) -> bool:
+    """Return True if the client advertised ``roots`` capability on ``initialize``.
+
+    The MCP spec says the server may only send ``roots/list`` if the
+    client declared ``capabilities.roots`` in its initialize payload.
+    Sending unconditionally is a spec violation and — more pragmatically —
+    can hang the server if the client's message handler silently drops
+    requests for capabilities it didn't opt in to.
+
+    The SDK stashes the client's initialize params on
+    ``session.client_params``; ``capabilities.roots`` is ``None`` if
+    the client did not advertise roots. We treat any non-None value as
+    support (the subtype ``RootsCapability`` carries a ``listChanged``
+    flag but the presence of the object itself is the capability
+    assertion).
+    """
+    try:
+        client_params = session.client_params
+    except AttributeError:  # pragma: no cover — SDK shape change.
+        return False
+    if client_params is None:
+        return False
+    caps = getattr(client_params, "capabilities", None)
+    if caps is None:
+        return False
+    return getattr(caps, "roots", None) is not None
+
+
 async def _discover_world_with_roots(
     app_context: AppContext,
     session: Any,
@@ -466,30 +504,64 @@ async def _discover_world_with_roots(
     app_context.roots_discovery_attempted = True
     roots: list[str] = []
 
-    try:
-        result = await session.list_roots()
-    except Exception as exc:  # noqa: BLE001 — we log the class below.
-        logger.warning(
-            "roots/list request failed (%s); keeping existing world_root=%r",
-            exc.__class__.__name__,
-            app_context.world_root,
+    # Skip the server-initiated request entirely if the client didn't
+    # advertise roots capability. Two reasons:
+    #
+    # 1. MCP spec compliance: servers must not send requests that
+    #    require a capability the client didn't declare.
+    # 2. Hang safety: a client that dropped the request without
+    #    responding would otherwise pin our discovery task on the
+    #    ``await`` until the timeout fires (5s per
+    #    :data:`ROOTS_LIST_TIMEOUT_S`). Skipping the request entirely
+    #    cuts the 5s idle out of every "no Roots, env-only" startup.
+    if not _client_supports_roots(session):
+        logger.info(
+            "client did not advertise roots capability; skipping "
+            "roots/list request, using env-only World discovery"
         )
     else:
-        # ``result.roots`` is a list of :class:`types.Root`. Each has a
-        # ``uri`` that is a ``file://`` URL per the MCP spec. Extract
-        # the local path and let :func:`discover_world` do the predicate
-        # matching.
-        for root in result.roots:
-            uri = str(root.uri)
-            path = _file_uri_to_path(uri)
-            if path is None:
-                logger.warning(
-                    "ignoring unsupported root uri %r (only local "
-                    "file:// roots are supported in v0.1)",
-                    uri,
-                )
-                continue
-            roots.append(path)
+        try:
+            # ``asyncio.wait_for`` returns on cancel via
+            # ``TimeoutError`` (Py3.11+; earlier used
+            # ``asyncio.TimeoutError``, which is aliased to
+            # ``TimeoutError`` on 3.11+). We catch the broad
+            # ``Exception`` below so any SDK-specific error (closed
+            # stream, etc.) takes the same fallback path.
+            result = await asyncio.wait_for(
+                session.list_roots(), timeout=ROOTS_LIST_TIMEOUT_S
+            )
+        except asyncio.TimeoutError:
+            logger.warning(
+                "roots/list request did not complete within %.1fs; "
+                "degrading to env-only discovery for this cycle",
+                ROOTS_LIST_TIMEOUT_S,
+            )
+            result = None
+        except Exception as exc:  # noqa: BLE001 — class logged below.
+            logger.warning(
+                "roots/list request failed (%s); keeping existing "
+                "world_root=%r",
+                exc.__class__.__name__,
+                app_context.world_root,
+            )
+            result = None
+
+        if result is not None:
+            # ``result.roots`` is a list of :class:`types.Root`. Each
+            # has a ``uri`` that is a ``file://`` URL per the MCP spec.
+            # Extract the local path and let :func:`discover_world` do
+            # the predicate matching.
+            for root in result.roots:
+                uri = str(root.uri)
+                path = _file_uri_to_path(uri)
+                if path is None:
+                    logger.warning(
+                        "ignoring unsupported root uri %r (only local "
+                        "file:// roots are supported in v0.1)",
+                        uri,
+                    )
+                    continue
+                roots.append(path)
 
     try:
         resolved = discover_world(roots=roots)
