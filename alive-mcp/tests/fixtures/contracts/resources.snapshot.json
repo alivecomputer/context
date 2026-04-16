@@ -1,0 +1,76 @@
+{
+  "resources": [
+    {
+      "description": "Standing domain knowledge for the walnut. Evergreen facts the squirrel has confirmed.",
+      "mimeType": "text/markdown",
+      "name": "ben insights",
+      "uri": "alive://walnut/02_Life/people/ben/kernel/insights"
+    },
+    {
+      "description": "Walnut identity -- type, goal, people, rhythm, tags, links. Changes rarely.",
+      "mimeType": "text/markdown",
+      "name": "ben key",
+      "uri": "alive://walnut/02_Life/people/ben/kernel/key"
+    },
+    {
+      "description": "Walnut history -- signed entries, prepend-only. Source of truth for what happened and when.",
+      "mimeType": "text/markdown",
+      "name": "ben log",
+      "uri": "alive://walnut/02_Life/people/ben/kernel/log"
+    },
+    {
+      "description": "Current state projection (JSON). Phase, active bundle, next action, updated timestamp.",
+      "mimeType": "application/json",
+      "name": "ben now",
+      "uri": "alive://walnut/02_Life/people/ben/kernel/now"
+    },
+    {
+      "description": "Standing domain knowledge for the walnut. Evergreen facts the squirrel has confirmed.",
+      "mimeType": "text/markdown",
+      "name": "sarah insights",
+      "uri": "alive://walnut/02_Life/people/sarah/kernel/insights"
+    },
+    {
+      "description": "Walnut identity -- type, goal, people, rhythm, tags, links. Changes rarely.",
+      "mimeType": "text/markdown",
+      "name": "sarah key",
+      "uri": "alive://walnut/02_Life/people/sarah/kernel/key"
+    },
+    {
+      "description": "Walnut history -- signed entries, prepend-only. Source of truth for what happened and when.",
+      "mimeType": "text/markdown",
+      "name": "sarah log",
+      "uri": "alive://walnut/02_Life/people/sarah/kernel/log"
+    },
+    {
+      "description": "Current state projection (JSON). Phase, active bundle, next action, updated timestamp.",
+      "mimeType": "application/json",
+      "name": "sarah now",
+      "uri": "alive://walnut/02_Life/people/sarah/kernel/now"
+    },
+    {
+      "description": "Standing domain knowledge for the walnut. Evergreen facts the squirrel has confirmed.",
+      "mimeType": "text/markdown",
+      "name": "nova-station insights",
+      "uri": "alive://walnut/04_Ventures/nova-station/kernel/insights"
+    },
+    {
+      "description": "Walnut identity -- type, goal, people, rhythm, tags, links. Changes rarely.",
+      "mimeType": "text/markdown",
+      "name": "nova-station key",
+      "uri": "alive://walnut/04_Ventures/nova-station/kernel/key"
+    },
+    {
+      "description": "Walnut history -- signed entries, prepend-only. Source of truth for what happened and when.",
+      "mimeType": "text/markdown",
+      "name": "nova-station log",
+      "uri": "alive://walnut/04_Ventures/nova-station/kernel/log"
+    },
+    {
+      "description": "Current state projection (JSON). Phase, active bundle, next action, updated timestamp.",
+      "mimeType": "application/json",
+      "name": "nova-station now",
+      "uri": "alive://walnut/04_Ventures/nova-station/kernel/now"
+    }
+  ]
+}

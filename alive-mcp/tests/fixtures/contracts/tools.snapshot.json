@@ -1,0 +1,449 @@
+{
+  "tools": [
+    {
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false,
+        "readOnlyHint": true
+      },
+      "description": "Read a bundle's manifest plus derived counts. Returns {manifest: {name, goal, outcome, status, phase, updated, due, context, active_sessions}, derived: {task_counts, raw_file_count, last_updated}}. Manifest carries all 9 frozen keys; missing values appear as null.",
+      "inputSchema": {
+        "properties": {
+          "bundle": {
+            "title": "Bundle",
+            "type": "string"
+          },
+          "walnut": {
+            "title": "Walnut",
+            "type": "string"
+          }
+        },
+        "required": [
+          "walnut",
+          "bundle"
+        ],
+        "title": "get_bundleArguments",
+        "type": "object"
+      },
+      "name": "get_bundle",
+      "outputSchema": {
+        "properties": {
+          "result": {
+            "additionalProperties": true,
+            "title": "Result",
+            "type": "object"
+          }
+        },
+        "required": [
+          "result"
+        ],
+        "title": "get_bundleOutput",
+        "type": "object"
+      }
+    },
+    {
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false,
+        "readOnlyHint": true
+      },
+      "description": "Read the current state projection (now.json) for a walnut. Returns the parsed dict: phase, updated, next, bundles, context, etc. Does not assemble on demand -- reads what is on disk. Accepts POSIX-relative walnut paths from list_walnuts.",
+      "inputSchema": {
+        "properties": {
+          "walnut": {
+            "title": "Walnut",
+            "type": "string"
+          }
+        },
+        "required": [
+          "walnut"
+        ],
+        "title": "get_walnut_stateArguments",
+        "type": "object"
+      },
+      "name": "get_walnut_state",
+      "outputSchema": {
+        "additionalProperties": true,
+        "title": "get_walnut_stateDictOutput",
+        "type": "object"
+      }
+    },
+    {
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false,
+        "readOnlyHint": true
+      },
+      "description": "List bundles in a walnut. Returns {bundles: [{path, name, goal, status, updated, due, outcome, phase}, ...]} -- subset of the manifest keys (drops 'context' and 'active_sessions' for list view). Use 'path' as the canonical bundle identifier in get_bundle / read_bundle_manifest.",
+      "inputSchema": {
+        "properties": {
+          "walnut": {
+            "title": "Walnut",
+            "type": "string"
+          }
+        },
+        "required": [
+          "walnut"
+        ],
+        "title": "list_bundlesArguments",
+        "type": "object"
+      },
+      "name": "list_bundles",
+      "outputSchema": {
+        "properties": {
+          "result": {
+            "additionalProperties": true,
+            "title": "Result",
+            "type": "object"
+          }
+        },
+        "required": [
+          "result"
+        ],
+        "title": "list_bundlesOutput",
+        "type": "object"
+      }
+    },
+    {
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false,
+        "readOnlyHint": true
+      },
+      "description": "List tasks for a walnut or a specific bundle. When bundle is omitted, returns every task from kernel-level tasks.json plus each bundle's tasks.json. When bundle is supplied, returns only that bundle's tasks. Returns {tasks:[...], counts:{urgent,active,todo,blocked,done}}.",
+      "inputSchema": {
+        "properties": {
+          "bundle": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Bundle"
+          },
+          "walnut": {
+            "title": "Walnut",
+            "type": "string"
+          }
+        },
+        "required": [
+          "walnut"
+        ],
+        "title": "list_tasksArguments",
+        "type": "object"
+      },
+      "name": "list_tasks",
+      "outputSchema": {
+        "properties": {
+          "result": {
+            "additionalProperties": true,
+            "title": "Result",
+            "type": "object"
+          }
+        },
+        "required": [
+          "result"
+        ],
+        "title": "list_tasksOutput",
+        "type": "object"
+      }
+    },
+    {
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false,
+        "readOnlyHint": true
+      },
+      "description": "List walnuts in the active ALIVE World. Returns {walnuts: [{path, name, domain, goal, health, updated}, ...], next_cursor, total}. Use 'path' as the canonical identifier in follow-up calls; 'name' is display-only. Cursor-paginate when 'next_cursor' is non-null.",
+      "inputSchema": {
+        "properties": {
+          "cursor": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Cursor"
+          },
+          "limit": {
+            "default": 50,
+            "title": "Limit",
+            "type": "integer"
+          }
+        },
+        "title": "list_walnutsArguments",
+        "type": "object"
+      },
+      "name": "list_walnuts",
+      "outputSchema": {
+        "additionalProperties": true,
+        "title": "list_walnutsDictOutput",
+        "type": "object"
+      }
+    },
+    {
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false,
+        "readOnlyHint": true
+      },
+      "description": "Read a bundle's manifest without derived counts. Returns {manifest: {...9 keys...}, warnings: [...]}. Use when the task / raw-file counts are not needed; cheaper than get_bundle because it skips disk scans.",
+      "inputSchema": {
+        "properties": {
+          "bundle": {
+            "title": "Bundle",
+            "type": "string"
+          },
+          "walnut": {
+            "title": "Walnut",
+            "type": "string"
+          }
+        },
+        "required": [
+          "walnut",
+          "bundle"
+        ],
+        "title": "read_bundle_manifestArguments",
+        "type": "object"
+      },
+      "name": "read_bundle_manifest",
+      "outputSchema": {
+        "properties": {
+          "result": {
+            "additionalProperties": true,
+            "title": "Result",
+            "type": "object"
+          }
+        },
+        "required": [
+          "result"
+        ],
+        "title": "read_bundle_manifestOutput",
+        "type": "object"
+      }
+    },
+    {
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false,
+        "readOnlyHint": true
+      },
+      "description": "Paginated read of a walnut's log with chapter-aware spanning. Unit is ENTRIES (one '## <ISO-8601>' heading = one entry), not bytes or lines. Newest-first ordering; offset=0 returns the newest entry. When offset+limit exceeds the active log, auto-spans into _kernel/history/chapter-NN.md descending. Returns {entries:[{timestamp,walnut,squirrel_id,body,signed},...], total_entries, total_chapters, next_offset, chapter_boundary_crossed}.",
+      "inputSchema": {
+        "properties": {
+          "limit": {
+            "default": 20,
+            "title": "Limit",
+            "type": "integer"
+          },
+          "offset": {
+            "default": 0,
+            "title": "Offset",
+            "type": "integer"
+          },
+          "walnut": {
+            "title": "Walnut",
+            "type": "string"
+          }
+        },
+        "required": [
+          "walnut"
+        ],
+        "title": "read_logArguments",
+        "type": "object"
+      },
+      "name": "read_log",
+      "outputSchema": {
+        "properties": {
+          "result": {
+            "additionalProperties": true,
+            "title": "Result",
+            "type": "object"
+          }
+        },
+        "required": [
+          "result"
+        ],
+        "title": "read_logOutput",
+        "type": "object"
+      }
+    },
+    {
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false,
+        "readOnlyHint": true
+      },
+      "description": "Read a kernel file whole. file is one of 'key' (identity), 'log' (full history), 'insights' (domain knowledge), or 'now' (current state JSON). Returns {content, mime}. For paginated log reads use the read_log tool instead.",
+      "inputSchema": {
+        "properties": {
+          "file": {
+            "enum": [
+              "key",
+              "log",
+              "insights",
+              "now"
+            ],
+            "title": "File",
+            "type": "string"
+          },
+          "walnut": {
+            "title": "Walnut",
+            "type": "string"
+          }
+        },
+        "required": [
+          "walnut",
+          "file"
+        ],
+        "title": "read_walnut_kernelArguments",
+        "type": "object"
+      },
+      "name": "read_walnut_kernel",
+      "outputSchema": {
+        "additionalProperties": true,
+        "title": "read_walnut_kernelDictOutput",
+        "type": "object"
+      }
+    },
+    {
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false,
+        "readOnlyHint": true
+      },
+      "description": "Substring-search every searchable file in a single walnut. Returns the same shape as search_world. Use 'walnut' as a POSIX-relative path from the World root (e.g. '04_Ventures/alive'). Cursor-paginate when 'next_cursor' is non-null.",
+      "inputSchema": {
+        "properties": {
+          "case_sensitive": {
+            "default": false,
+            "title": "Case Sensitive",
+            "type": "boolean"
+          },
+          "cursor": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Cursor"
+          },
+          "limit": {
+            "default": 20,
+            "title": "Limit",
+            "type": "integer"
+          },
+          "query": {
+            "title": "Query",
+            "type": "string"
+          },
+          "walnut": {
+            "title": "Walnut",
+            "type": "string"
+          }
+        },
+        "required": [
+          "walnut",
+          "query"
+        ],
+        "title": "search_walnutArguments",
+        "type": "object"
+      },
+      "name": "search_walnut",
+      "outputSchema": {
+        "properties": {
+          "result": {
+            "additionalProperties": true,
+            "title": "Result",
+            "type": "object"
+          }
+        },
+        "required": [
+          "result"
+        ],
+        "title": "search_walnutOutput",
+        "type": "object"
+      }
+    },
+    {
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false,
+        "readOnlyHint": true
+      },
+      "description": "Substring-search every searchable file across every walnut in the active ALIVE World. Returns {matches: [{walnut, file, line_number, content, context_before, context_after}, ...], next_cursor, skipped}. Case-insensitive by default. Cursor-paginate when 'next_cursor' is non-null. Files >500KB are listed in 'skipped' with reason 'file_too_large'.",
+      "inputSchema": {
+        "properties": {
+          "case_sensitive": {
+            "default": false,
+            "title": "Case Sensitive",
+            "type": "boolean"
+          },
+          "cursor": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Cursor"
+          },
+          "limit": {
+            "default": 20,
+            "title": "Limit",
+            "type": "integer"
+          },
+          "query": {
+            "title": "Query",
+            "type": "string"
+          }
+        },
+        "required": [
+          "query"
+        ],
+        "title": "search_worldArguments",
+        "type": "object"
+      },
+      "name": "search_world",
+      "outputSchema": {
+        "properties": {
+          "result": {
+            "additionalProperties": true,
+            "title": "Result",
+            "type": "object"
+          }
+        },
+        "required": [
+          "result"
+        ],
+        "title": "search_worldOutput",
+        "type": "object"
+      }
+    }
+  ]
+}
