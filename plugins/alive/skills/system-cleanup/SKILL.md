@@ -66,7 +66,7 @@ Tidy is read-heavy. Every phase uses subagents to keep the main context clean.
 - **Phase 2:** Single subagent reads all walnut frontmatter, returns the health table.
 - **Phase 3:** Dispatch all 12 checks as parallel subagents (one check per subagent). Wait for all. Present results together — passing checks collapsed, failures expanded one at a time.
 
-Each subagent gets: the subagent brief (read `$CLAUDE_PLUGIN_ROOT/templates/subagent-brief.md` once, prepend to every agent prompt), the check description, what to scan, what constitutes a pass/fail, and instructions to return a structured result (pass/fail + details if fail). **Without the brief, subagents will not understand walnut/bundle structure, tasks.py, or v3 conventions.**
+Each subagent gets: the subagent brief (read `$ALIVE_PLUGIN_ROOT/templates/subagent-brief.md` once, prepend to every agent prompt), the check description, what to scan, what constitutes a pass/fail, and instructions to return a structured result (pass/fail + details if fail). **Without the brief, subagents will not understand walnut/bundle structure, tasks.py, or v3 conventions.**
 
 **Never read walnut files in the main context.** All file reading happens inside subagents. The main context only sees results.
 

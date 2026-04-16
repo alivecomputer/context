@@ -16,10 +16,10 @@ Not a list (that's the tree in alive:world). Not a search (that's alive:search-w
 
 ### 1. Generate the World Index
 
-Run `.alive/scripts/generate-index.py` to walk all walnuts and collect frontmatter. If the script doesn't exist in the world yet, copy it from the plugin (`scripts/generate-index.py`) or inline the logic.
+Run `generate-index.py` from the plugin to walk all walnuts and collect frontmatter. Always use the plugin cache copy — never copy scripts to the world (world-local copies drift from the plugin and produce stale data).
 
 ```bash
-python3 .alive/scripts/generate-index.py
+python3 "$ALIVE_PLUGIN_ROOT/scripts/generate-index.py" "$WORLD_ROOT"
 ```
 
 The script walks all directories for `key.md` files, handling both `_kernel/key.md` (current structure) and root-level `key.md` (flat/legacy structure). It deduplicates entries and skips template walnuts.
@@ -47,13 +47,13 @@ Default to Tier 2. Offer toggle controls for Tier 1 (simplified) and Tier 3 (ful
 
 ### 2. Render the Graph
 
-Run `.alive/scripts/generate-graph.py` to read the JSON index and generate an interactive D3.js graph.
+Run `generate-graph.py` from the plugin to read the JSON index and generate an interactive D3.js graph.
 
 ```bash
-python3 .alive/scripts/generate-graph.py
+python3 "$ALIVE_PLUGIN_ROOT/scripts/generate-graph.py" "$WORLD_ROOT"
 ```
 
-The graph is written to `.alive/context-graph.html` — a self-contained HTML file with embedded data, D3.js from CDN, and custom fonts from Fontshare/Google Fonts.
+The graph is written to `.alive/context-graph.html` — an HTML file with embedded data, D3.js from CDN, and custom fonts from Fontshare/Google Fonts.
 
 **Theme:** Alive branded. Light mode default (cream #FAF8F5, orange primary #F97316). Dark mode toggle (forest green #0A1F0D, copper #B87333 accents). Custom fonts: Array (display), Khand (headings), Inter (body).
 
@@ -173,10 +173,10 @@ Click any walnut with bundles to expand them as orbiting nodes:
 | `.alive/_index.yaml` | Generated world index — human-readable, all frontmatter |
 | `.alive/_index.json` | Generated world index — JSON for graph consumption |
 | `.alive/context-graph.html` | Interactive D3.js graph — self-contained, Alive branded |
-| `.alive/scripts/generate-index.py` | Index generator (walks tree, reads frontmatter, outputs YAML + JSON) |
-| `.alive/scripts/generate-graph.py` | Graph generator (reads JSON index, outputs branded HTML with D3.js) |
+| `$ALIVE_PLUGIN_ROOT/scripts/generate-index.py` | Index generator (walks tree, reads frontmatter, outputs YAML + JSON) |
+| `$ALIVE_PLUGIN_ROOT/scripts/generate-graph.py` | Graph generator (reads JSON index, outputs branded HTML with D3.js) |
 
-**Plugin source:** Both scripts ship with the plugin at `scripts/generate-index.py` and `scripts/generate-graph.py`. On first `alive:my-context-graph` invocation, copy them to `.alive/scripts/` if not already present.
+**Important:** Always use the plugin cache copies. Do NOT copy scripts to `.alive/scripts/` — world-local copies drift from the plugin on updates and produce stale data (root cause of t003).
 
 ---
 

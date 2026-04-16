@@ -86,14 +86,15 @@ fi
 
 TIMESTAMP=$(date -u +"%Y-%m-%dT%H:%M:%S")
 
+# Plugin root for reading rules and statusline
+PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(cd "$SCRIPT_DIR/../.." && pwd)}"
+
 # Set env vars via CLAUDE_ENV_FILE if available
 if [ -n "${CLAUDE_ENV_FILE:-}" ]; then
   echo "ALIVE_SESSION_ID=$SESSION_ID" >> "$CLAUDE_ENV_FILE"
   echo "ALIVE_WORLD_ROOT=$WORLD_ROOT" >> "$CLAUDE_ENV_FILE"
+  echo "ALIVE_PLUGIN_ROOT=$PLUGIN_ROOT" >> "$CLAUDE_ENV_FILE"
 fi
-
-# Plugin root for reading rules and statusline
-PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(cd "$SCRIPT_DIR/../.." && pwd)}"
 
 # Quick-count rule files (no content reading) so YAML has correct count immediately
 RULE_COUNT=0

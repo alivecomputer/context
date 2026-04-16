@@ -24,7 +24,7 @@ Read these in parallel before presenting the stash or writing anything:
 
 **Do NOT read task files directly** — task data lives in `now.json` already, or call `tasks.py list --walnut {path}` if you need specific detail.
 
-**If `_kernel/now.json` does not exist:** suggest running `python3 "$CLAUDE_PLUGIN_ROOT/scripts/project.py" --walnut {path}` to generate it.
+**If `_kernel/now.json` does not exist:** suggest running `python3 "$ALIVE_PLUGIN_ROOT/scripts/project.py" --walnut {path}` to generate it.
 
 **Standalone session (no walnut loaded):** If no walnut was opened this session, the squirrel still has a stash to route. Ask: "Which walnut does this session belong to?" If the human names one, load its core files and proceed normally. If truly walnut-less (system maintenance, cross-walnut work, one-off task), write the log entry to `.alive/log.md` instead of a walnut log. Same format, same signing. The squirrel YAML at `.alive/_squirrels/` keeps `walnut: null`.
 
@@ -107,9 +107,9 @@ Then prepare the content for all remaining files in memory:
 - **`_kernel/insights.md`** — new evergreen entries (only if confirmed in step 3)
 - **Cross-walnut dispatches** — brief log entries for destination walnuts
 - **Tasks via `tasks.py`** — plan the calls:
-  - New task: `python3 "$CLAUDE_PLUGIN_ROOT/scripts/tasks.py" add --walnut {path} --title "..." --bundle {name} --priority urgent`
-  - Mark done: `python3 "$CLAUDE_PLUGIN_ROOT/scripts/tasks.py" done --walnut {path} --id t001`
-  - Edit: `python3 "$CLAUDE_PLUGIN_ROOT/scripts/tasks.py" edit --walnut {path} --id t001 --priority active`
+  - New task: `python3 "$ALIVE_PLUGIN_ROOT/scripts/tasks.py" add --walnut {path} --title "..." --bundle {name} --priority urgent`
+  - Mark done: `python3 "$ALIVE_PLUGIN_ROOT/scripts/tasks.py" done --walnut {path} --id t001`
+  - Edit: `python3 "$ALIVE_PLUGIN_ROOT/scripts/tasks.py" edit --walnut {path} --id t001 --priority active`
 
 **The agent does NOT write `now.json`.** The post-write hook runs `project.py` automatically after `log.md` is written, which assembles `now.json` from all source files. Do not prepare now.json content.
 
