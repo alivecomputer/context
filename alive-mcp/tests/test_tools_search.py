@@ -392,6 +392,58 @@ class FilePlanTests(unittest.TestCase):
             "templates/foo/context.manifest.yaml", plan
         )
 
+    def test_archive_bundles_included(self) -> None:
+        # Spec-frozen skip set does NOT include ``_archive`` or
+        # ``01_Archive`` -- only node_modules, .git, __pycache__,
+        # .venv, venv, dist, build, .next, target, templates, raw.
+        # The vendored find_bundles DOES skip those (and _core +
+        # 01_Archive), so using vendor discovery would silently drop
+        # archive bundles from search -- violating the frozen rules.
+        # This test asserts the local walk includes them.
+        self.world.make_walnut("alive")
+        self.world.make_bundle(
+            "alive", "_archive/retired-one", "goal: archived\n"
+        )
+        plan = search_tools._walnut_file_plan(
+            str(self.world.root),
+            str(self.world.walnut_path("alive")),
+        )
+        self.assertIn(
+            "_archive/retired-one/context.manifest.yaml", plan
+        )
+
+    def test_nested_walnut_bundles_excluded(self) -> None:
+        # A nested walnut (its own _kernel/key.md) is a boundary.
+        # Its bundles are that walnut's inventory, not the parent's.
+        self.world.make_walnut("parent")
+        self.world.make_walnut("parent/nested")
+        self.world.make_bundle(
+            "parent/nested", "bundles/child", "goal: child\n"
+        )
+        plan = search_tools._walnut_file_plan(
+            str(self.world.root),
+            str(self.world.walnut_path("parent")),
+        )
+        # Parent's plan must not include the nested walnut's bundle.
+        self.assertNotIn(
+            "nested/bundles/child/context.manifest.yaml", plan
+        )
+
+    def test_node_modules_skipped(self) -> None:
+        self.world.make_walnut("alive")
+        # A manifest accidentally landing under node_modules must
+        # not surface in search results.
+        self.world.make_bundle(
+            "alive", "node_modules/some-pkg", "goal: should not appear\n"
+        )
+        plan = search_tools._walnut_file_plan(
+            str(self.world.root),
+            str(self.world.walnut_path("alive")),
+        )
+        self.assertNotIn(
+            "node_modules/some-pkg/context.manifest.yaml", plan
+        )
+
     def test_bundle_manifests_sorted_alphabetically(self) -> None:
         self.world.make_walnut("alive")
         # Create bundles in reverse-alphabetical order to confirm sort.

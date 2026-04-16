@@ -108,17 +108,20 @@ Cursor stability and World mutation
 Cursors are stable across calls within a server run *as long as the
 walnut inventory + file plan for the active walnut are stable*. The
 ``wi`` / ``fi`` indices reference a list shape; mutating that shape
-between calls (add/remove a walnut, delete a bundle, rename a kernel
-file) can invalidate the cursor.
+between calls can invalidate the cursor.
 
-Concrete behavior under mutation:
+This is the deliberate v0.1 trade-off: stateless index-based cursors
+keep server memory O(active requests) rather than O(in-flight
+paginations × World size) -- which matters when a World has
+thousands of walnuts and pagination sessions may span minutes. The
+cost is that World mutations between pages are not snapshot-
+consistent:
 
-* **Walnut added before the cursor's realpath slot** -- the new
-  walnut is emitted on the next page because ``wi`` still points at
-  its prior target; the displaced walnut will produce duplicate
-  matches on that page. This is the "shifts indices but doesn't
-  corrupt results" accepted behavior called out in the task spec:
-  results are a superset of the "no mutation" case, never a subset.
+* **Walnut added before the cursor's slot** -- the cursor still
+  points at index ``wi`` in the new (longer) list, but that index
+  now references a DIFFERENT walnut. Added walnuts whose alphabetic
+  slot precedes the cursor will NOT appear in this pagination run;
+  callers that need snapshot consistency must restart from page 1.
 * **Walnut added after the cursor's slot** -- appears on a later
   page naturally; no duplication, no skips.
 * **Walnut removed at or before the cursor's wi** -- the cursor
@@ -134,11 +137,11 @@ Concrete behavior under mutation:
   do not corrupt pagination shape (the scanner tolerates an ``lo``
   past the file end by yielding zero matches and advancing).
 
-Callers that need stronger guarantees (e.g. a large search with
-parallel writers) should finish a search before the World changes --
-or retry from page 1 on ``ERR_INVALID_CURSOR``. The spec explicitly
-accepts this trade-off for v0.1 to avoid materializing a snapshot
-of the entire World per server run.
+Callers that need stronger guarantees (a large search with parallel
+writers) should finish a search before the World changes, or
+retry from page 1 on ``ERR_INVALID_CURSOR``. The spec accepts this
+trade-off for v0.1 to avoid materializing a snapshot of the entire
+World per server run.
 
 Result shape per match
 ----------------------
@@ -193,7 +196,6 @@ from mcp.server.fastmcp import Context, FastMCP
 from mcp.types import ToolAnnotations
 
 from alive_mcp import envelope, errors
-from alive_mcp._vendor import walnut_paths
 from alive_mcp.paths import is_inside
 from alive_mcp.tools._audit_stub import audited
 from alive_mcp.tools.walnut import (
@@ -255,9 +257,11 @@ _SKIP_DIRS: frozenset[str] = frozenset({
 })
 
 #: Fixed per-walnut kernel file order. Relpaths from the walnut root.
-#: ``_kernel/now.json`` is listed here; the v2 fallback at
-#: ``_kernel/_generated/now.json`` is appended dynamically by
-#: :func:`_walnut_file_plan` when the v3 file is absent.
+#: v2 ``_kernel/_generated/now.json`` is NOT searched in v0.1 -- only
+#: the v3 ``_kernel/now.json`` contributes to the plan, and when it's
+#: absent now.json simply doesn't appear for that walnut. The reader
+#: tools accept the v2 location; search does not. See the module
+#: docstring's "Explicitly NOT searched" block for the full rationale.
 _KERNEL_FILE_ORDER: Tuple[str, ...] = (
     "_kernel/key.md",
     "_kernel/log.md",
@@ -405,45 +409,102 @@ def _normalize_line(line: str, case_sensitive: bool) -> str:
 def _bundle_manifest_plan(walnut_abs: str) -> List[str]:
     """Return bundle manifest relpaths under ``walnut_abs``, sorted.
 
-    Uses the vendored :func:`walnut_paths.find_bundles` for discovery
-    (directory-walk only -- no manifest reads happen here). Each
-    discovered bundle contributes ``<bundle_relpath>/context.manifest.yaml``
-    to the plan. Returns POSIX-relative paths from the walnut root.
+    Local discovery walk using ONLY the spec-frozen :data:`_SKIP_DIRS`
+    set + dotfile pruning + nested-walnut boundary detection. The
+    vendored :func:`walnut_paths.find_bundles` has its own skip list
+    (``_kernel``, ``_core``, ``01_Archive``, ``_archive``,
+    ``_references``, etc.) that is both broader AND narrower than the
+    search spec's set -- ``templates`` isn't in the vendor set, and
+    ``01_Archive``/``_archive`` are in the vendor set but not the
+    search spec. Inheriting vendor pruning would violate the "frozen
+    inclusion rules" requirement, so we walk the tree ourselves.
 
-    Sorted ascending by relpath so the ordering is deterministic
-    across runs. Matches the vendored ``find_bundles`` output order
-    (which also sorts) but we re-sort defensively to insulate against
-    future vendor changes.
+    Discovery rules (matches the task spec):
 
-    Additional skip-dir filter. ``walnut_paths.find_bundles`` has its
-    own internal skip list (overlapping with but not identical to the
-    search-tool's :data:`_SKIP_DIRS`) -- notably, ``templates`` is in
-    our skip set but NOT in the vendored set. We re-filter the
-    vendored discovery output so any relpath containing a
-    :data:`_SKIP_DIRS` segment (or a hidden ``.``-prefixed segment)
-    is dropped. This matches the spec's deterministic-ordering
-    requirement: if the spec changes the skip set, the search tool
-    must honor the change without relying on the vendor to propagate
-    it first.
+    * A directory is a bundle iff it contains
+      ``context.manifest.yaml``. ``companion.md`` (v1 legacy) is NOT
+      a bundle for search purposes -- search is v3/v2 only.
+    * Skip ``_kernel`` (the walnut's own identity dir) and any
+      directory in :data:`_SKIP_DIRS` or starting with ``.``.
+    * Stop descending at any nested walnut boundary
+      (``<dir>/_kernel/key.md`` exists): nested walnuts are their own
+      inventory and shouldn't bleed into the parent's bundle list.
+    * Return POSIX-relative paths from ``walnut_abs``, sorted
+      ascending.
+
+    The walnut root itself is never a bundle, even if a stray
+    manifest sits there (matches the vendored posture at
+    ``walnut_paths.find_bundles``).
     """
+    walnut_abs = os.path.abspath(walnut_abs)
+    kept: List[str] = []
+    nested_walnut_roots: set[str] = set()
+
     try:
-        pairs = walnut_paths.find_bundles(walnut_abs)
+        walker = os.walk(walnut_abs, followlinks=False)
     except OSError as exc:
         logger.warning(
             "bundle discovery failed for %r: %s", walnut_abs, exc
         )
         return []
-    kept: List[str] = []
-    for rel, _abs in pairs:
-        segments = [s for s in rel.split("/") if s]
-        # Skip any bundle whose relpath passes through a skip-dir or a
-        # hidden segment (dotfile). ``find_bundles`` returns POSIX
-        # paths so segment comparison is safe cross-platform.
-        if any(seg in _SKIP_DIRS or seg.startswith(".") for seg in segments):
-            continue
-        kept.append(rel)
-    # ``find_bundles`` already sorts, but re-sort as a contract
-    # guarantee. Cheap at v0.1 scale.
+
+    # Need the kernel dir name constant at the top of the walk.
+    _KERNEL = "_kernel"
+    try:
+        for root, dirs, files in walker:
+            rel = os.path.relpath(root, walnut_abs)
+
+            # Prune hidden + skip dirs in-place (load-bearing: os.walk
+            # only honors mutations on this list reference). Skip
+            # ``_kernel`` explicitly so the walnut's identity dir is
+            # never part of the bundle plan.
+            dirs[:] = [
+                d for d in dirs
+                if not d.startswith(".")
+                and d != _KERNEL
+                and d not in _SKIP_DIRS
+            ]
+
+            # If we're below a nested walnut boundary, stop descending.
+            if rel != ".":
+                rel_posix = rel.replace(os.sep, "/")
+                inside_nested = False
+                for nested in nested_walnut_roots:
+                    if rel_posix == nested or rel_posix.startswith(
+                        nested + "/"
+                    ):
+                        inside_nested = True
+                        break
+                if inside_nested:
+                    dirs[:] = []
+                    continue
+
+                # Detect a fresh nested-walnut boundary: a non-root
+                # directory containing _kernel/key.md. Mark and stop
+                # descending; its interior is a separate walnut's
+                # inventory.
+                if os.path.isfile(os.path.join(root, _KERNEL, "key.md")):
+                    nested_walnut_roots.add(rel_posix)
+                    dirs[:] = []
+                    continue
+
+            # Bundle detection. v2/v3 layout only -- v1 ``companion.md``
+            # is NOT surfaced by search. The walnut root itself is
+            # skipped even if it carries a stray manifest (matches the
+            # vendor's posture + keeps search output clean).
+            if rel == ".":
+                continue
+            if "context.manifest.yaml" in files:
+                kept.append(rel.replace(os.sep, "/"))
+    except OSError as exc:
+        # Partial walk is acceptable -- log and return what we have.
+        # Without this, a permission failure deep in the tree would
+        # take out the entire bundle plan.
+        logger.warning(
+            "bundle discovery walk interrupted for %r: %s",
+            walnut_abs, exc,
+        )
+
     kept.sort()
     return ["{}/context.manifest.yaml".format(rel) for rel in kept]
 
@@ -620,16 +681,21 @@ class _SearchState:
 
 def _cursor_in_range(
     cursor: _Cursor,
-    walnut_plan: List[Tuple[str, str, List[str]]],
+    world_root: str,
+    walnut_inventory: List[Tuple[str, str]],
 ) -> bool:
-    """Return True iff ``cursor`` points at a valid position in ``walnut_plan``.
+    """Return True iff ``cursor`` points at a valid position in the inventory.
 
     A cursor is in-range when:
 
     * ``wi`` is either 0 (origin) or a valid index into
-      ``walnut_plan`` (``0 <= wi < len(walnut_plan)``), AND
+      ``walnut_inventory`` (``0 <= wi < len(walnut_inventory)``), AND
     * ``fi`` is either 0 or a valid index into the active walnut's
-      file plan (``0 <= fi < len(walnut_plan[wi].file_plan)``).
+      file plan.
+
+    The file-plan check is only performed for the single referenced
+    walnut (``walnut_inventory[cursor.wi]``) so we don't pay bundle-
+    discovery cost for every walnut just to validate a cursor.
 
     ``lo`` itself is NOT range-checked here -- lines within a file
     are free to rebind (edits to a kernel file between calls can
@@ -642,30 +708,36 @@ def _cursor_in_range(
     Two origin cases pass transparently:
 
     * ``_Cursor(0, 0, 0)`` (fresh call, no cursor) -- passes even
-      when ``walnut_plan`` is empty because ``wi=0`` is the
+      when ``walnut_inventory`` is empty because ``wi=0`` is the
       terminating condition (the scanner returns immediately).
-    * ``_Cursor(wi, 0, 0)`` with ``wi == len(walnut_plan)`` -- a
+    * ``_Cursor(wi, 0, 0)`` with ``wi == len(walnut_inventory)`` -- a
       cursor that was correct when written but has since "advanced
       past the end" as walnuts were removed. Treat as invalid so
       the caller restarts cleanly instead of seeing an empty page.
 
-    Called right after cursor decode + plan assembly in both tools.
-    Returning False maps to :data:`errors.ERR_INVALID_CURSOR`.
+    Called right after cursor decode + inventory assembly in both
+    tools. Returning False maps to :data:`errors.ERR_INVALID_CURSOR`.
     """
     # Origin cursor always valid -- empty World just yields empty
     # results without erroring on the cursor shape.
     if cursor.wi == 0 and cursor.fi == 0 and cursor.lo == 0:
         return True
 
-    if cursor.wi >= len(walnut_plan):
+    if cursor.wi >= len(walnut_inventory):
         return False
 
-    # ``fi`` is scoped to the active walnut's file plan. A zero ``fi``
-    # with an empty file plan is valid (scanner advances walnut
-    # immediately); a non-zero ``fi`` beyond the plan is not.
-    _, _, file_plan = walnut_plan[cursor.wi]
-    if cursor.fi > 0 and cursor.fi >= len(file_plan):
-        return False
+    # ``fi`` is scoped to the active walnut's file plan. We only
+    # compute the plan for the single referenced walnut -- paying
+    # bundle-discovery cost for all walnuts just to validate a
+    # cursor would defeat the lazy-plan optimization elsewhere.
+    # A zero ``fi`` with an empty file plan is valid (scanner
+    # advances walnut immediately); a non-zero ``fi`` beyond the
+    # plan is not.
+    if cursor.fi > 0:
+        _, walnut_abs = walnut_inventory[cursor.wi]
+        file_plan = _walnut_file_plan(world_root, walnut_abs)
+        if cursor.fi >= len(file_plan):
+            return False
     return True
 
 
@@ -687,21 +759,31 @@ def _resolve_limit(limit: int) -> int:
 
 def _run_search(
     world_root: str,
-    walnut_plan: List[Tuple[str, str, List[str]]],
+    walnut_inventory: List[Tuple[str, str]],
     normalized_query: str,
     case_sensitive: bool,
     limit: int,
     cursor: _Cursor,
     prefix_skipped_with_walnut: bool,
 ) -> _SearchState:
-    """Execute the paginated search.
+    """Execute the paginated search with lazy per-walnut file plans.
 
-    ``walnut_plan`` is a list of ``(walnut_relpath, walnut_abs,
-    file_plan)`` triples. ``file_plan`` is the fixed file order for
-    that walnut. The cursor points into this structure:
-    ``cursor.wi`` = walnut index; ``cursor.fi`` = file index within
-    the walnut's file_plan; ``cursor.lo`` = line offset within the
-    current file.
+    ``walnut_inventory`` is ``[(walnut_relpath, walnut_abs), ...]``
+    -- just the walnut identity pairs. File plans are computed
+    lazily when a walnut is actually visited. This matters: the
+    acceptance target is <3s for a world-wide search, and eager
+    plan assembly would pay bundle-discovery cost for every walnut
+    even when the first page of results comes from the first file
+    in the first walnut. A paginated ``limit=20`` call on a 43-walnut
+    World should do work proportional to "files scanned until
+    limit reached", not "every bundle discovered in every walnut".
+
+    Cursor semantics:
+
+    * ``cursor.wi`` -- index into ``walnut_inventory``.
+    * ``cursor.fi`` -- index into the active walnut's file plan,
+      computed on-demand when that walnut is visited.
+    * ``cursor.lo`` -- line offset within the current file.
 
     ``prefix_skipped_with_walnut`` controls the anchoring of entries
     in ``structuredContent.skipped``:
@@ -724,8 +806,13 @@ def _run_search(
     state = _SearchState(matches=[], skipped=[], next_cursor=None)
 
     wi = cursor.wi
-    while wi < len(walnut_plan):
-        walnut_rel, walnut_abs, file_plan = walnut_plan[wi]
+    while wi < len(walnut_inventory):
+        walnut_rel, walnut_abs = walnut_inventory[wi]
+        # Lazy: only build the file plan now that we've reached this
+        # walnut. The plan assembly triggers a bundle-discovery walk
+        # for this walnut only, keeping world-wide search cost
+        # proportional to walnuts actually traversed.
+        file_plan = _walnut_file_plan(world_root, walnut_abs)
         # File index: on the FIRST walnut we may resume mid-walnut;
         # on every subsequent walnut we start at 0.
         fi = cursor.fi if wi == cursor.wi else 0
@@ -917,14 +1004,15 @@ async def search_world(
             file="list",
         )
 
-    # Build the walnut plan: (relpath, abs, file_plan). Only walnuts
-    # the cursor hasn't already passed are needed, but we build the
-    # full list for determinism -- the wi index is an index into this
-    # full list, and building a shorter list would shift indices.
-    # Sort key: (realpath, relpath). Realpath is primary (spec); the
+    # Build the walnut inventory: just identity pairs (relpath, abs).
+    # File plans are built lazily inside ``_run_search`` only for
+    # walnuts actually visited. At 43 walnuts this matters -- eager
+    # plan assembly would trigger a bundle-discovery walk per walnut
+    # regardless of whether the limit was satisfied early.
+    #
+    # Sort key: (realpath, relpath). Realpath is primary (spec);
     # relpath tie-break guarantees fully deterministic ordering even
-    # when two walnuts happen to share a realpath (shouldn't happen
-    # at the walnut granularity, but the tie-break is cheap).
+    # when two walnuts happen to share a realpath.
     walnut_relpaths = sorted(
         walnut_relpaths,
         key=lambda rel: (
@@ -932,24 +1020,24 @@ async def search_world(
             rel,
         ),
     )
-    walnut_plan: List[Tuple[str, str, List[str]]] = []
-    for rel in walnut_relpaths:
-        walnut_abs = os.path.join(world_root, rel)
-        file_plan = _walnut_file_plan(world_root, walnut_abs)
-        walnut_plan.append((rel, walnut_abs, file_plan))
+    walnut_inventory: List[Tuple[str, str]] = [
+        (rel, os.path.join(world_root, rel)) for rel in walnut_relpaths
+    ]
 
     # Cursor range validation. A structurally valid cursor can still
     # point outside the current inventory (World mutated between
     # calls -- walnut removed, file deleted). Catching that here
     # surfaces the stale cursor as ``ERR_INVALID_CURSOR`` instead of
     # silently returning an empty page that looks like "search
-    # exhausted" to the caller.
-    if not _cursor_in_range(decoded_cursor, walnut_plan):
+    # exhausted" to the caller. The range check is scoped to the
+    # referenced walnut only (doesn't pay bundle-discovery cost for
+    # every walnut in the inventory).
+    if not _cursor_in_range(decoded_cursor, world_root, walnut_inventory):
         return envelope.error(errors.ERR_INVALID_CURSOR)
 
     state = _run_search(
         world_root,
-        walnut_plan,
+        walnut_inventory,
         normalized_query,
         case_sensitive,
         resolved_limit,
@@ -1029,19 +1117,21 @@ async def search_walnut(
     # accepts both POSIX and OS-native separators.
     walnut_posix = walnut.replace("\\", "/").strip("/")
 
-    file_plan = _walnut_file_plan(world_root, walnut_abs)
-    walnut_plan = [(walnut_posix, walnut_abs, file_plan)]
+    # Single-walnut inventory -- ``_run_search`` builds the file plan
+    # lazily so we don't pay bundle-discovery cost if the cursor
+    # validates as out-of-range or the query short-circuits.
+    walnut_inventory = [(walnut_posix, walnut_abs)]
 
     # Cursor range validation -- same posture as search_world.
     # Detects stale cursors pointing past the current file plan
     # (e.g. a bundle removed between calls) and surfaces them as
     # ERR_INVALID_CURSOR so the caller restarts cleanly.
-    if not _cursor_in_range(decoded_cursor, walnut_plan):
+    if not _cursor_in_range(decoded_cursor, world_root, walnut_inventory):
         return envelope.error(errors.ERR_INVALID_CURSOR)
 
     state = _run_search(
         world_root,
-        walnut_plan,
+        walnut_inventory,
         normalized_query,
         case_sensitive,
         resolved_limit,
