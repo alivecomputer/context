@@ -130,13 +130,17 @@ was rejected.
 ## 4. Python version errors on install
 
 **Symptom.**
-`uvx alive-mcp@0.1.0` fails with
+`uvx alive-mcp@0.1.0` fails with either
 "No solution found when resolving tool dependencies: requires
-Python >=3.10,<3.14, your system is 3.14.0".
+Python >=3.10,<3.14, your system is 3.14.0", or transient wheel-
+availability / source-build errors on Python 3.13.
 
-**Cause.** alive-mcp v0.1 pins `>=3.10,<3.14`. Python 3.10, 3.11,
-3.12, and 3.13 are all supported. The upper cap excludes Python 3.14
-until the upstream `mcp` SDK ships validated CI against it.
+**Cause.** alive-mcp v0.1 pins `>=3.10,<3.14`. Python 3.10, 3.11, 3.12,
+and 3.13 are all supported by the package. CI validates on 3.12 (the
+recommended interpreter for this version). 3.13 can hit platform-
+specific dependency-resolution issues on some combinations (missing
+wheels triggering source builds); pinning to 3.12 sidesteps these. 3.14
+is excluded until the upstream `mcp` SDK ships validated CI against it.
 
 **Fix.** Point `uv` at a pinned 3.12 interpreter:
 

@@ -80,6 +80,12 @@ a forward-compat alias, `ALIVE_WORLD_ROOT` wins if both are set).
 | Continue.dev   | `~/.continue/config.yaml` or `<project>/.continue/config.yaml`   | [`docs/configs/continue.yaml`](docs/configs/continue.yaml) |
 | ChatGPT        | Not supported in v0.1 (needs remote Streamable HTTP + OAuth)     | [`docs/configs/chatgpt.md`](docs/configs/chatgpt.md) |
 
+> **macOS Claude Desktop users:** if the server fails to connect on first
+> try with "spawn uvx ENOENT", replace `"command": "uvx"` with the
+> absolute path from `which uvx`. GUI apps on macOS inherit a minimal
+> PATH that excludes `~/.local/bin`. Full details in
+> [troubleshooting #1](docs/troubleshooting.md#1-uvuvx-not-found-macos-claude-desktop).
+
 ### World discovery
 
 alive-mcp serves exactly one ALIVE World per server process. It
@@ -118,9 +124,13 @@ outer `content` / `isError` wrapper is always present and follows the
 spec. On error, `isError: true` and `structuredContent` carries
 `{error, message, suggestions}` per [`docs/error-codes.md`](docs/error-codes.md).
 
-The reference below is generated from the committed contract snapshot
-at `tests/fixtures/contracts/tools.snapshot.json`; any drift is caught
-by CI.
+The authoritative contract is the committed snapshot at
+[`tests/fixtures/contracts/tools.snapshot.json`](tests/fixtures/contracts/tools.snapshot.json).
+CI diffs the live server's `tools/list` output against that snapshot
+on every PR - so tool names, descriptions, parameters, and annotations
+cannot drift silently. The examples below are hand-written and
+illustrative; they match the snapshot at release time but are not
+auto-regenerated.
 
 ### `list_walnuts`
 
@@ -562,13 +572,15 @@ of truth for the tool / resource / error surface; update them with
 
 ## References
 
-- Full design: `.flow/specs/fn-10-60k.md` in the monorepo root.
-- Research bundle: `alive-mcp-research/` - protocol decisions, client
-  capability matrix, SDK evaluation, consent and security patterns.
+- Full design: [`.flow/specs/fn-10-60k.md`](https://github.com/alivecontext/alive/blob/main/.flow/specs/fn-10-60k.md)
+  in the monorepo root.
+- Research bundle: [`alive-mcp-research/`](https://github.com/alivecontext/alive/tree/main/alive-mcp-research) -
+  protocol decisions, client capability matrix, SDK evaluation, consent
+  and security patterns.
 - Strategic context (why MCP matters for ALIVE distribution):
-  `competitor-mempalace/competitor-mempalace-draft-01.md` - the Moat C
-  thesis. MCP is the distribution channel the category is picking;
-  without an MCP server, ALIVE is invisible to adjacent agents.
+  [`competitor-mempalace/competitor-mempalace-draft-01.md`](https://github.com/alivecontext/alive/blob/main/competitor-mempalace/competitor-mempalace-draft-01.md) -
+  the Moat C thesis. MCP is the distribution channel the category is
+  picking; without an MCP server, ALIVE is invisible to adjacent agents.
 
 ## License
 
