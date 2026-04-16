@@ -156,6 +156,26 @@ def _collect_all_tasks(walnut):
     return all_tasks
 
 
+def _find_all_walnuts(world_root):
+    """Find all walnut directories under an ALIVE world root.
+
+    A walnut is any directory containing _kernel/key.md.
+    Scans 02_Life/, 04_Ventures/, 05_Experiments/, and 01_Archive/.
+    """
+    walnuts = []
+    for domain in ["01_Archive", "02_Life", "04_Ventures", "05_Experiments"]:
+        domain_path = os.path.join(world_root, domain)
+        if not os.path.isdir(domain_path):
+            continue
+        for root, dirs, files in os.walk(domain_path):
+            dirs[:] = [d for d in dirs if not d.startswith(".")]
+            kernel_key = os.path.join(root, "_kernel", "key.md")
+            if os.path.isfile(kernel_key):
+                walnuts.append(root)
+                dirs[:] = []  # don't descend into nested walnuts
+    return sorted(walnuts)
+
+
 def _read_manifest_field(manifest_path, field):
     """Read a single field from context.manifest.yaml using regex.
 
@@ -389,12 +409,36 @@ def cmd_edit(args):
 
 
 def cmd_list(args):
-    walnut = args.walnut
-    if not os.path.isdir(walnut):
-        print("Error: invalid walnut path: {}".format(walnut), file=sys.stderr)
+    world = getattr(args, "world", None)
+    walnut = getattr(args, "walnut", None)
+    search = getattr(args, "search", None)
+
+    if not world and not walnut:
+        print("Error: either --walnut or --world is required", file=sys.stderr)
         sys.exit(1)
 
-    all_tasks = _collect_all_tasks(walnut)
+    # Determine which walnuts to scan
+    if world:
+        if not os.path.isdir(os.path.join(world, ".alive")):
+            print("Error: {} does not appear to be an ALIVE world".format(world), file=sys.stderr)
+            sys.exit(1)
+        walnut_paths = _find_all_walnuts(world)
+    else:
+        if not os.path.isdir(walnut):
+            print("Error: invalid walnut path: {}".format(walnut), file=sys.stderr)
+            sys.exit(1)
+        walnut_paths = [walnut]
+
+    # Collect tasks across all target walnuts
+    all_tasks = []
+    for wp in walnut_paths:
+        tasks = _collect_all_tasks(wp)
+        if world:
+            # Add walnut attribution for cross-walnut results
+            walnut_name = os.path.relpath(wp, world)
+            for t in tasks:
+                t["walnut"] = walnut_name
+        all_tasks.extend(tasks)
 
     # Apply filters
     filtered = []
@@ -415,6 +459,12 @@ def cmd_list(args):
             continue
         if args.tag and args.tag not in task.get("tags", []):
             continue
+
+        # Text search filter
+        if search:
+            title = task.get("title", "")
+            if search.lower() not in title.lower():
+                continue
 
         filtered.append(task)
 
@@ -634,7 +684,9 @@ def main():
 
     # list
     p_list = sub.add_parser("list")
-    p_list.add_argument("--walnut", required=True)
+    p_list.add_argument("--walnut", default=None, help="Single walnut path to list tasks from")
+    p_list.add_argument("--world", default=None, help="World root — list tasks across all walnuts")
+    p_list.add_argument("--search", default=None, help="Case-insensitive substring match on task title")
     p_list.add_argument("--bundle", default=None)
     p_list.add_argument("--priority", default=None)
     p_list.add_argument("--assignee", default=None)

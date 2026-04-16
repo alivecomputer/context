@@ -24,7 +24,13 @@ Scan `_kernel/insights.md` across relevant walnuts. Domain knowledge that persis
 Search `_kernel/log.md` entries. Signed decisions, session summaries, what happened when. Frontmatter first (last-entry, summary), then entry bodies.
 
 ### 4. Task Search (work queue)
-Use `tasks.py list` to query tasks across walnuts. Find tasks by status, age, attribution.
+Search tasks across all walnuts using `tasks.py list` with the `--world` and `--search` flags:
+
+```bash
+python3 "$ALIVE_PLUGIN_ROOT/scripts/tasks.py" list --world "$WORLD_ROOT" --search "{query}"
+```
+
+Returns JSON with tasks matching the query across all walnuts. Each result includes a `walnut` field for attribution. Combine with `--status`, `--priority`, `--assignee`, `--tag` for narrower results.
 
 ### 5. Working File Search (drafts)
 Scan `*/` across walnuts (bundles are flat in walnut root). Find drafts by name, version, age, squirrel attribution.
