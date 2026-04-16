@@ -80,7 +80,7 @@ from mcp.types import ToolAnnotations
 
 from alive_mcp import envelope, errors
 from alive_mcp._vendor._pure import project_pure
-from alive_mcp.paths import safe_join
+from alive_mcp.paths import is_inside, resolve_under, safe_join
 from alive_mcp.tools._audit_stub import audited
 
 logger = logging.getLogger("alive_mcp.tools.walnut")
@@ -284,59 +284,98 @@ def _read_text_or_empty(path: str, limit_bytes: Optional[int] = None) -> str:
         return ""
 
 
-def _resolve_now_path(walnut_abs: str) -> Optional[str]:
-    """Return the first existing ``now.json`` for ``walnut_abs``.
+def _kernel_file_in_world(
+    world_root: str, walnut_abs: str, filename: str
+) -> Optional[str]:
+    """Resolve ``<walnut>/_kernel/<filename>`` and verify in-world containment.
+
+    Returns the realpath when the file exists AND resolves inside the
+    World root after symlink resolution. Returns ``None`` in every
+    other case: the file is missing, the realpath escapes the World
+    (symlink to ``/etc/passwd`` or similar), or an OS error prevents
+    the stat.
+
+    This is the single point of truth for "is this kernel file safe
+    to open?" Every caller that touches ``_kernel/*`` content goes
+    through here so a symlink-to-anywhere attack is caught uniformly.
+    We accept symlinks that point INSIDE the World (common in monorepo
+    worktrees, iCloud mirrors) and reject symlinks whose realpath
+    leaves the World (the :mod:`alive_mcp.paths` contract).
+
+    ``filename`` can include a POSIX-style subpath
+    (``"_generated/now.json"``); it's split on forward slashes and
+    joined via ``os.path.join`` so Windows separators stay honored.
+    """
+    parts = [p for p in filename.split("/") if p]
+    if not parts:
+        return None
+    candidate = os.path.join(walnut_abs, _KERNEL_DIRNAME, *parts)
+    if not os.path.isfile(candidate):
+        return None
+    # is_inside realpaths BOTH sides and uses commonpath -- handles
+    # symlinks, absolute overrides, and Windows drive differences.
+    if not is_inside(world_root, candidate):
+        logger.warning(
+            "kernel file at %r escapes World root via symlink or "
+            "absolute path; rejecting",
+            os.path.join(_KERNEL_DIRNAME, *parts),
+        )
+        return None
+    return candidate
+
+
+def _resolve_now_path(world_root: str, walnut_abs: str) -> Optional[str]:
+    """Return the first existing + in-world ``now.json`` for ``walnut_abs``.
 
     v3 layout (``_kernel/now.json``) wins; v2 fallback
     (``_kernel/_generated/now.json``) is used only when v3 is absent.
-    Returns ``None`` if neither exists -- the caller handles that as
-    ``ERR_KERNEL_FILE_MISSING``. See the epic spec "now.json canonical
-    resolution order" section.
+    Each candidate is validated by :func:`_kernel_file_in_world`, so a
+    symlinked now.json pointing outside the World is treated as
+    missing. Returns ``None`` if neither path exists (or both escape).
 
-    This checks EXISTENCE only, not parseability. If a v3 file exists
-    but is malformed, we don't automatically fall through here --
-    callers that want parse-aware fallback (get_walnut_state) use the
-    :func:`_iter_now_candidates` helper below which returns every
-    candidate in order.
+    This checks EXISTENCE + containment only, not parseability. If a
+    v3 file exists but is malformed, callers that want parse-aware
+    fallback (get_walnut_state) use :func:`_iter_now_candidates`.
     """
-    v3 = os.path.join(walnut_abs, _KERNEL_DIRNAME, "now.json")
-    if os.path.isfile(v3):
+    v3 = _kernel_file_in_world(world_root, walnut_abs, "now.json")
+    if v3 is not None:
         return v3
-    v2 = os.path.join(walnut_abs, _KERNEL_DIRNAME, "_generated", "now.json")
-    if os.path.isfile(v2):
-        return v2
-    return None
+    return _kernel_file_in_world(world_root, walnut_abs, "_generated/now.json")
 
 
-def _iter_now_candidates(walnut_abs: str) -> List[str]:
-    """Return every existing ``now.json`` path in v3-then-v2 order.
+def _iter_now_candidates(world_root: str, walnut_abs: str) -> List[str]:
+    """Return every existing + in-world ``now.json`` in v3-then-v2 order.
 
     Used by ``get_walnut_state`` to mirror the vendor scanner's posture
     (``project_pure.scan_nested_walnuts``): when a v3 now.json exists
     but is malformed, try the v2 fallback before returning
-    ``ERR_KERNEL_FILE_MISSING``. Callers that want existence-first
-    single-shot semantics keep using :func:`_resolve_now_path`.
+    ``ERR_KERNEL_FILE_MISSING``. A symlinked now.json whose realpath
+    leaves the World is dropped at this layer, NOT passed through and
+    rejected later -- containment is a precondition for the file
+    appearing on this list at all.
     """
     candidates: List[str] = []
-    v3 = os.path.join(walnut_abs, _KERNEL_DIRNAME, "now.json")
-    if os.path.isfile(v3):
+    v3 = _kernel_file_in_world(world_root, walnut_abs, "now.json")
+    if v3 is not None:
         candidates.append(v3)
-    v2 = os.path.join(walnut_abs, _KERNEL_DIRNAME, "_generated", "now.json")
-    if os.path.isfile(v2):
+    v2 = _kernel_file_in_world(world_root, walnut_abs, "_generated/now.json")
+    if v2 is not None:
         candidates.append(v2)
     return candidates
 
 
-def _read_now_for_health(walnut_abs: str) -> dict[str, Any]:
-    """Return the parsed now.json if readable, else an empty dict.
+def _read_now_for_health(world_root: str, walnut_abs: str) -> dict[str, Any]:
+    """Return the parsed now.json if readable + in-world, else an empty dict.
 
-    Best-effort -- a missing or malformed now.json just means we can't
-    derive ``health`` or ``updated``; the walnut still appears in the
-    listing. Matches Hermes' posture. Delegates to the vendored pure
-    parser so the list-path and tool-path share a single source of
-    truth for now.json semantics.
+    Best-effort -- a missing, escaping, or malformed now.json just
+    means we can't derive ``health`` or ``updated``; the walnut still
+    appears in the listing. Matches Hermes' posture. Delegates to the
+    vendored pure parser so the list-path and tool-path share a
+    single source of truth for now.json semantics. Symlinks whose
+    realpath escapes the World are filtered at
+    :func:`_kernel_file_in_world` and look the same as missing here.
     """
-    now_path = _resolve_now_path(walnut_abs)
+    now_path = _resolve_now_path(world_root, walnut_abs)
     if now_path is None:
         return {}
     data = project_pure.parse_now_json(now_path)
@@ -453,21 +492,29 @@ def _iter_walnut_paths(world_root: str) -> List[str]:
     # fixtures) do not -- we fall back to a permissive top-level
     # scan for those. The fallback still skips hidden dirs and the
     # usual system/build dirs.
-    try:
-        top_entries = set(os.listdir(world_real))
-    except OSError:
-        return found
+    #
+    # NOTE on error propagation: we deliberately let ``OSError`` from
+    # ``os.listdir`` bubble up rather than silently returning an empty
+    # list. A permission failure reading the World root is a real
+    # signal the caller needs to surface as ``ERR_PERMISSION_DENIED``
+    # -- the earlier silent-empty behavior masked that as
+    # ``total=0`` with no error, which is ambiguous and misleading.
+    top_entries = set(os.listdir(world_real))
     has_alive_layout = any(d in top_entries for d in _WORLD_ROOT_ALLOWLIST)
 
     at_root = True
     for root, dirs, files in os.walk(world_real, followlinks=False):
         # Walnut check FIRST (before pruning) so ``_kernel`` is still in
         # ``dirs`` when we look at it. A directory is a walnut iff it
-        # contains ``_kernel/key.md`` on disk. We stat only when the
-        # lightweight ``_kernel in dirs`` prefilter passes.
+        # contains ``_kernel/key.md`` on disk AND that file resolves
+        # inside the World after symlink resolution. The second check
+        # blocks a symlink attack where ``<walnut>/_kernel/key.md``
+        # points at ``/etc/passwd`` -- we would otherwise count that
+        # directory as a walnut and serve reads of the escape file
+        # through ``read_walnut_kernel``.
         if _KERNEL_DIRNAME in dirs and root != world_real:
-            key_path = os.path.join(root, _KERNEL_DIRNAME, "key.md")
-            if os.path.isfile(key_path):
+            key_path = _kernel_file_in_world(world_real, root, "key.md")
+            if key_path is not None:
                 rel = os.path.relpath(root, world_real)
                 found.append(rel.replace(os.sep, "/"))
 
@@ -504,17 +551,26 @@ def _build_record(world_root: str, posix_rel: str) -> _WalnutRecord:
     Reads ``_kernel/key.md`` frontmatter for ``goal`` and ``rhythm``,
     and ``_kernel/now.json`` (v3 or v2 fallback) for ``updated``.
     ``health`` is derived from those two. Each read is best-effort --
-    a malformed file yields an empty string for the affected field
-    rather than dropping the walnut from the listing.
+    a malformed or escape-symlinked file yields an empty string for
+    the affected field rather than dropping the walnut from the
+    listing. Every disk read is containment-validated via
+    :func:`_kernel_file_in_world`.
     """
     walnut_abs = os.path.join(world_root, posix_rel)
-    key_path = os.path.join(walnut_abs, _KERNEL_DIRNAME, "key.md")
-    key_text = _read_text_or_empty(key_path, limit_bytes=8 * 1024)
+    # key.md: only read if it resolves inside the World. An escaping
+    # symlink would leak file contents into the goal/rhythm fields,
+    # defeating openWorldHint=False.
+    key_path = _kernel_file_in_world(world_root, walnut_abs, "key.md")
+    key_text = (
+        _read_text_or_empty(key_path, limit_bytes=8 * 1024)
+        if key_path is not None
+        else ""
+    )
     fm = _parse_frontmatter_fields(key_text, ("goal", "rhythm"))
     goal = fm.get("goal", "")
     rhythm = fm.get("rhythm", "")
 
-    now = _read_now_for_health(walnut_abs)
+    now = _read_now_for_health(world_root, walnut_abs)
     updated = now.get("updated", "") if isinstance(now, dict) else ""
     if not isinstance(updated, str):
         updated = ""
@@ -561,10 +617,16 @@ def _resolve_walnut(world_root: str, walnut: str) -> str:
         )
     # safe_join raises PathEscapeError if the result escapes world_root.
     abs_path = safe_join(world_root, *segments)
-    key_path = os.path.join(abs_path, _KERNEL_DIRNAME, "key.md")
-    if not os.path.isfile(key_path):
+    # Walnut predicate: ``_kernel/key.md`` must exist AND resolve
+    # inside the World after symlink resolution. An escaping symlink
+    # looks the same as "no such walnut" from the client perspective
+    # -- the server does not acknowledge a walnut whose identity file
+    # is outside its authorization scope.
+    key_path = _kernel_file_in_world(world_root, abs_path, "key.md")
+    if key_path is None:
         raise errors.WalnutNotFoundError(
-            "no _kernel/key.md at resolved walnut path"
+            "no _kernel/key.md at resolved walnut path (or the file "
+            "resolves outside the World)"
         )
     return abs_path
 
@@ -740,7 +802,22 @@ async def list_walnuts(
     # <1s target, we can shim this through run_in_executor.
     try:
         paths = _iter_walnut_paths(world_root)
+    except PermissionError as exc:
+        # OSError subclass raised when the World root (or any walk-
+        # path) denies read access. Surface the cause to the client
+        # via ERR_PERMISSION_DENIED rather than returning an empty
+        # inventory silently.
+        logger.warning("list_walnuts traversal denied: %s", exc)
+        return envelope.error(
+            errors.ERR_PERMISSION_DENIED,
+            walnut="(world inventory)",
+            file="list",
+        )
     except OSError as exc:
+        # Other OS errors (ENOENT on the World root after a race,
+        # bad NFS state, etc.) likewise surface as
+        # ERR_PERMISSION_DENIED with a generic diagnostic -- the
+        # audit log (T12) captures the specific errno.
         logger.warning("list_walnuts traversal failed: %s", exc)
         return envelope.error(
             errors.ERR_PERMISSION_DENIED,
@@ -806,8 +883,10 @@ async def get_walnut_state(
     # posture. If v3 exists but is malformed or has a non-dict root, we
     # fall through to v2 rather than surface a MISSING error that hid a
     # usable v2 projection. Only after EVERY candidate fails do we
-    # emit ERR_KERNEL_FILE_MISSING.
-    candidates = _iter_now_candidates(walnut_abs)
+    # emit ERR_KERNEL_FILE_MISSING. A symlinked now.json pointing
+    # outside the World is dropped at the candidate-list step and
+    # never reaches the parse loop.
+    candidates = _iter_now_candidates(world_root, walnut_abs)
     if not candidates:
         return envelope.error(
             errors.ERR_KERNEL_FILE_MISSING,
@@ -913,9 +992,15 @@ async def read_walnut_kernel(
     except errors.WalnutNotFoundError:
         return _walnut_not_found_envelope(world_root, walnut)
 
-    # Resolve the on-disk path by file stem.
+    # Resolve the on-disk path by file stem. Every candidate goes
+    # through :func:`_kernel_file_in_world` so a symlinked kernel
+    # file whose realpath escapes the World is filtered before we
+    # open it. Without this, a walnut owner could point
+    # ``_kernel/key.md`` at ``/etc/passwd`` and read_walnut_kernel
+    # would happily serve its contents -- violating
+    # ``openWorldHint=False``.
     if file == "now":
-        target = _resolve_now_path(walnut_abs)
+        target = _resolve_now_path(world_root, walnut_abs)
     else:
         basename = _FILE_MAP.get(file)
         if basename is None:
@@ -923,8 +1008,7 @@ async def read_walnut_kernel(
             # unreachable, but a malformed client that side-steps
             # validation still hits an envelope, not a traceback.
             return envelope.error(errors.ERR_KERNEL_FILE_MISSING, walnut=walnut, file=file)
-        candidate = os.path.join(walnut_abs, _KERNEL_DIRNAME, basename)
-        target = candidate if os.path.isfile(candidate) else None
+        target = _kernel_file_in_world(world_root, walnut_abs, basename)
 
     if target is None:
         return envelope.error(

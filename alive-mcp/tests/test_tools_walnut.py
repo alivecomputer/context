@@ -393,6 +393,62 @@ class ListWalnutsTests(unittest.TestCase):
         self.assertEqual(envelope["structuredContent"]["walnuts"], [])
         self.assertIsNone(envelope["structuredContent"]["next_cursor"])
 
+    def test_symlinked_key_md_escape_not_counted_as_walnut(self) -> None:
+        """A walnut whose key.md symlinks outside the World is filtered.
+
+        Security regression guard: without the symlink-realpath check
+        in ``_kernel_file_in_world``, a directory containing a
+        ``_kernel/key.md`` symlink to ``/etc/passwd`` (or any path
+        outside the authorized World root) would be treated as a
+        walnut and its content exposed via read_walnut_kernel. The
+        openWorldHint=False contract forbids this.
+        """
+        # Create a bait "walnut" at 04_Ventures/bait whose key.md is
+        # a symlink to a file OUTSIDE the world.
+        bait_kernel = self.world.walnut_path("04_Ventures/bait") / "_kernel"
+        bait_kernel.mkdir(parents=True, exist_ok=True)
+        outside_target = pathlib.Path(
+            tempfile.mkstemp(prefix="alive-mcp-escape-")[1]
+        )
+        outside_target.write_text("fake secret\n")
+        self.addCleanup(lambda: outside_target.unlink(missing_ok=True))
+        (bait_kernel / "key.md").symlink_to(outside_target)
+
+        env = self._call()
+        paths = [
+            w["path"]
+            for w in env["structuredContent"]["walnuts"]
+        ]
+        # The bait walnut must NOT appear in the listing.
+        self.assertNotIn("04_Ventures/bait", paths)
+
+    def test_permission_error_on_root_returns_permission_denied(self) -> None:
+        """A World root that can't be listed surfaces as ERR_PERMISSION_DENIED.
+
+        Previously the traversal silently returned an empty list,
+        masking the permission failure as ``total=0``. Now the error
+        propagates to the envelope so clients can see it and react.
+        """
+        import os as _os
+
+        # Use a temp dir and strip read permission. On macOS, 0o000
+        # still allows the owner to re-chmod, so cleanup is safe.
+        restricted = tempfile.mkdtemp(prefix="alive-mcp-noread-")
+        self.addCleanup(lambda: (
+            _os.chmod(restricted, 0o700),
+            shutil.rmtree(restricted, ignore_errors=True),
+        ))
+        _os.chmod(restricted, 0o000)
+
+        # Build a ctx pointing at the restricted dir. We can't use
+        # self.world here because setUp already set up a valid world.
+        ctx = _fake_ctx(restricted)
+        env = _run(walnut_tools.list_walnuts(ctx))
+        self.assertTrue(env["isError"])
+        self.assertEqual(
+            env["structuredContent"]["error"], "PERMISSION_DENIED"
+        )
+
     def test_under_1s_at_43_walnut_scale(self) -> None:
         # The epic's acceptance target: <1s at 43 walnuts. Build that
         # many in the fixture and time the list call.
@@ -702,6 +758,39 @@ class ReadWalnutKernelTests(unittest.TestCase):
         self.assertGreaterEqual(len(suggestions), 1)
         self.assertIn("Did you mean", suggestions[0])
         self.assertIn("04_Ventures/alive", suggestions[0])
+
+    def test_symlinked_insights_pointing_outside_is_rejected(self) -> None:
+        """A symlinked kernel file escaping the World is filtered as missing.
+
+        Security regression guard: without the containment check, a
+        walnut owner pointing ``_kernel/insights.md`` at
+        ``/etc/passwd`` could serve the file via read_walnut_kernel.
+        The tool must refuse to read kernel files whose realpath
+        leaves the World -- indistinguishable from "missing" at the
+        client layer by design (we do NOT leak that the file exists
+        but escapes).
+        """
+        # /04_Ventures/alive is the valid walnut from setUp, with
+        # insights.md already written. Replace that file with a
+        # symlink to an out-of-world target.
+        good_path = (
+            self.world.walnut_path("04_Ventures/alive")
+            / "_kernel"
+            / "insights.md"
+        )
+        good_path.unlink()
+        outside_target = pathlib.Path(
+            tempfile.mkstemp(prefix="alive-mcp-escape-insights-")[1]
+        )
+        outside_target.write_text("secret content\n")
+        self.addCleanup(lambda: outside_target.unlink(missing_ok=True))
+        good_path.symlink_to(outside_target)
+
+        env = self._call("04_Ventures/alive", "insights")
+        self.assertTrue(env["isError"])
+        self.assertEqual(
+            env["structuredContent"]["error"], "KERNEL_FILE_MISSING"
+        )
 
     def test_whole_file_not_paginated(self) -> None:
         # Write a long log and verify we get every byte back. Pagination
