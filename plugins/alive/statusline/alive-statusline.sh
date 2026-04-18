@@ -105,23 +105,10 @@ fi
 SHORT_ID="${SESSION_ID:0:8}"
 ENTRY="$WORLD_ROOT/.alive/_squirrels/$SESSION_ID.yaml"
 
-# Wait briefly for SessionStart hook to finish writing the YAML
-if [ ! -f "$ENTRY" ]; then
-  sleep 0.2
-fi
-if [ ! -f "$ENTRY" ]; then
-  echo -e "${YELLOW}${WARN_ICON} alive: session not registered${RESET} ${DIM}${EM_DASH} context not compounding. Check plugin: /alive:world${RESET}"
-  exit 0
-fi
-
-RULES=$(grep '^rules_loaded:' "$ENTRY" 2>/dev/null | sed 's/rules_loaded: *//' || echo "0")
-
-if [ "$RULES" = "0" ] || [ -z "$RULES" ]; then
-  echo -e "${RED}${WARN_ICON} alive: rules not loaded${RESET} ${DIM}${EM_DASH} session running without context system. Restart session.${RESET}"
-  exit 0
-fi
-
-# ── HEALTHY STATE ──
+# ── BOOT DETECTION (before YAML check) ──
+# On first render (cost $0.00), the session-start hook may still be writing
+# the squirrel YAML. The boot message doesn't need it, so render immediately
+# without waiting. Eliminates the race condition on iCloud/slow filesystems.
 
 # Count walnuts available (check both v2 _kernel/ and v1 _core/ for backward compat)
 WALNUT_COUNT=""
@@ -131,7 +118,6 @@ if [ -n "$WORLD_ROOT" ]; then
   WALNUT_COUNT=$(( V2_COUNT + V1_COUNT ))
 fi
 
-# Boot vs working: if cost is $0.00, session hasn't had a response yet
 if [ "$COST" = "\$0.00" ]; then
   # ── BOOT MESSAGE -- rotates tip each render ──
   TIPS=(
@@ -151,6 +137,19 @@ if [ "$COST" = "\$0.00" ]; then
 fi
 
 # ── WORKING STATUSLINE ──
+# By this point cost > $0.00, so the session-start hook has definitely completed.
+
+if [ ! -f "$ENTRY" ]; then
+  echo -e "${YELLOW}${WARN_ICON} alive: session not registered${RESET} ${DIM}${EM_DASH} context not compounding. Check plugin: /alive:world${RESET}"
+  exit 0
+fi
+
+RULES=$(grep '^rules_loaded:' "$ENTRY" 2>/dev/null | sed 's/rules_loaded: *//' || echo "0")
+
+if [ "$RULES" = "0" ] || [ -z "$RULES" ]; then
+  echo -e "${RED}${WARN_ICON} alive: rules not loaded${RESET} ${DIM}${EM_DASH} session running without context system. Restart session.${RESET}"
+  exit 0
+fi
 
 # Detect active walnut from squirrel YAML
 ACTIVE_WALNUT=""
