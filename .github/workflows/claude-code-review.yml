@@ -3,20 +3,38 @@ name: Claude Code Review
 on:
   pull_request:
     types: [opened, synchronize, ready_for_review, reopened]
-    # Optional: Only run on specific file changes
-    # paths:
-    #   - "src/**/*.ts"
-    #   - "src/**/*.tsx"
-    #   - "src/**/*.js"
-    #   - "src/**/*.jsx"
+    # Skip docs-only PRs -- auto-review has little to add on prose
+    paths-ignore:
+      - '**/*.md'
+      - 'docs/**'
+      - '.github/**'
+  # Allow on-demand runs via the Actions UI. `@claude` mention in a PR
+  # comment is handled by the other workflow (claude.yml); this one
+  # supports deliberate CI-side invocation.
+  workflow_dispatch:
+    inputs:
+      pr_number:
+        description: 'PR number to review'
+        required: true
+        type: string
 
 jobs:
   claude-review:
-    # Optional: Filter by PR author
-    # if: |
-    #   github.event.pull_request.user.login == 'external-contributor' ||
-    #   github.event.pull_request.user.login == 'new-developer' ||
-    #   github.event.pull_request.author_association == 'FIRST_TIME_CONTRIBUTOR'
+    # Gate the auto-review:
+    #   - skip draft PRs (author still iterating)
+    #   - skip if the PR carries `no-claude-review` label (explicit opt-out)
+    #   - skip if author is on the internal team (Patrick/Ben/Will do
+    #     manual reviews; auto-review would be noise). External
+    #     contributors still get auto-reviewed by default.
+    # `workflow_dispatch` runs bypass the gate -- if you're firing it
+    # manually you want it to run.
+    if: |
+      github.event_name == 'workflow_dispatch' ||
+      (
+        github.event.pull_request.draft == false &&
+        !contains(github.event.pull_request.labels.*.name, 'no-claude-review') &&
+        !contains(fromJson('["benslockedin","patrickSupernormal","willsupernormal"]'), github.event.pull_request.user.login)
+      )
 
     runs-on: ubuntu-latest
     permissions:
@@ -38,7 +56,10 @@ jobs:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           plugin_marketplaces: 'https://github.com/anthropics/claude-code.git'
           plugins: 'code-review@claude-code-plugins'
-          prompt: '/code-review:code-review ${{ github.repository }}/pull/${{ github.event.pull_request.number }}'
+          # Resolve PR number from whichever event fired the workflow.
+          prompt: '/code-review:code-review ${{ github.repository }}/pull/${{ github.event.pull_request.number || github.event.inputs.pr_number }}'
+          # Keep a single sticky comment on the PR instead of stacking a
+          # new review per synchronize push.
+          use_sticky_comment: true
           # See https://github.com/anthropics/claude-code-action/blob/main/docs/usage.md
           # or https://code.claude.com/docs/en/cli-reference for available options
-
