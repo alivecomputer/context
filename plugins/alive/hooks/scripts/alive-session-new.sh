@@ -367,14 +367,7 @@ YOUR WORLD NEEDS MIGRATION. Run:
 It will show you exactly what changes, back everything up, and migrate your world. Takes a few minutes. Nothing breaks if you don't — but you'll be running v3 rules on v2 structure, which means degraded performance and missing features.
 
 — Ben (@benslockedin)
----
-
-AGENT INSTRUCTION: Before doing ANYTHING else, use the AskUserQuestion tool to ask:
-question: 'Your world needs migrating to ALIVE v3. This upgrades task tracking, projections, and load speed. Run /alive:system-upgrade now?'
-options: ['Yes, upgrade now', 'Not now, keep working']
-
-If they choose 'Yes, upgrade now', invoke alive:system-upgrade immediately.
-If they choose 'Not now, keep working', proceed normally but remind them again at save time."
+---"
   fi
 fi
 
