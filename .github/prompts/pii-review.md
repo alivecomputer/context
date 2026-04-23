@@ -25,6 +25,8 @@ If `PII_WATCHLIST_JSON` is unset, empty, or its arrays are empty, proceed using 
 
 Patterns that are objectively wrong regardless of context. For each match, post a suggestion block with the obvious redaction.
 
+A file is considered a **test fixture** (exempt from Tier A) only if it sits under `tests/fixtures/synthetic-*/` OR its first line is `<!-- ALLOW-PII: reason -->` (for markdown/HTML) or `# ALLOW-PII: reason` (for YAML/shell/Python). All other files under `tests/` are in scope, including test source files, helper modules, and `tests/decisions.md`-style working notes.
+
 Examples:
 
 - Absolute user path: `/Users/alice/Desktop/Project` in plugin code, outside a test fixture explicitly marked as a fixture.
@@ -58,6 +60,7 @@ DO flag:
 - Hardcoded names in example dialogue or skill demonstrations where the name looks real.
 - Fixture data using real-looking names instead of synthetic ones.
 - Comments referencing specific people (for example `// Ben said to do this differently`).
+- Handles ending in brand suffixes like `Supernormal`, `Labs`, `Works`, `Studio`, `Industries`, `Co` (for example `someoneSupernormal`, `personLabs`). These are real-person-at-real-business markers. Flag them under Tier B; you may additionally flag the business suffix under Tier C.
 - Any match against `PII_WATCHLIST_JSON.names` if the watchlist is populated.
 
 Bias toward flagging when unsure. The author can dismiss false positives in one click.
@@ -110,15 +113,15 @@ You are also encouraged to flag novel structural patterns that feel like they co
 
 Post ONE GitHub review on the PR. The review contains inline comments on each flagged line.
 
-Each inline comment has this shape:
+Each inline comment has this shape (the outer fence below uses four backticks to display the nested triple-backtick `suggestion` block as literal markdown; your actual review posts the inner `suggestion` block directly into the GitHub comment):
 
-```
+````
 Reason: <one line explaining why this is flagged>
 
 ```suggestion
 <proposed replacement text>
 ```
-```
+````
 
 At the top of the review, post a summary comment of this shape:
 
@@ -144,6 +147,7 @@ PII Review: no issues found.
 - Never fail the CI check. Your output is advisory only.
 - Never commit directly to the PR branch. All redactions flow through suggestion blocks.
 - Never post the watchlist values in your review output or in any visible comment.
-- Never flag content in files that start with `<!-- ALLOW-PII: reason -->` as the first line.
+- Never flag content in files that start with `<!-- ALLOW-PII: reason -->` (markdown/HTML) or `# ALLOW-PII: reason` (YAML/shell/Python) as the first non-shebang line.
+- Never cascade-flag content inside `.github/prompts/` or `.github/workflows/` that is clearly illustrative (wrapped in backticks, under an "Examples:" heading, or prefaced with "for example"). These files define the review bot itself; their own example strings are not leaks.
 
 ## End
