@@ -12,6 +12,7 @@
 
 # ─── WORLD BEHAVIOUR ─────────────────────────────────────────────
 # health_nudges: true           # Surface stale walnut warnings proactively
+# feedback_nudges: true         # Suggest /alive:feedback after errors or hook failures
 
 # ─── PERMISSIONS ──────────────────────────────────────────────────
 # permissions:

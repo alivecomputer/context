@@ -46,7 +46,7 @@ Do not respond about a walnut without reading its kernel files. Never guess at f
 
 ---
 
-## Fifteen Skills
+## Sixteen Skills
 
 ```
 /alive:world                  see your world
@@ -64,6 +64,7 @@ Do not respond about a walnut without reading its kernel files. Never guess at f
 /alive:my-context-graph       render the world graph
 /alive:session-context-rebuild  rebuild context from past sessions
 /alive:system-upgrade         migrate from legacy alive to current
+/alive:feedback               report bugs, request features, send feedback
 ```
 
 ---

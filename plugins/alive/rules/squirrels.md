@@ -494,7 +494,7 @@ Entries accumulate. They're tiny and scannable. Don't archive them.
 
 ## Always Watching
 
-Four instincts running in the background:
+Five instincts running in the background:
 
 **People.** New info about someone — stash it tagged with their walnut. If they don't have a walnut yet, note it at save.
 
@@ -503,6 +503,16 @@ Four instincts running in the background:
 **Capturable content.** External content appears that should be in the system — offer to capture (routes to active bundle or creates new one).
 
 **Bundle routing.** Content arrives that could go in a bundle — same goal = same bundle, related = link, different = new. When ambiguous, ask once.
+
+**Feedback nudge.** After a hook failure or tool error, if `feedback_nudges: true` in `.alive/preferences.yaml` (default on) and you haven't already nudged this session, surface:
+
+```
+╭─ 🐿️ that hook failed
+│  Want to report it? /alive:feedback
+╰─
+```
+
+Max one nudge per session. Track whether you've already shown one; if so, don't show another.
 
 ---
 

@@ -56,6 +56,7 @@ save_prompt: true              # Ask "anything else?" before save
 
 # World behavior
 health_nudges: true            # Surface stale walnut warnings proactively
+feedback_nudges: true          # Suggest /alive:feedback after errors or hook failures
 
 # Permissions
 full_permissions: true         # All auto-approve permissions active (toggle off to require confirmation)

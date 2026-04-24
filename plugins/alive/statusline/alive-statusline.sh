@@ -90,6 +90,12 @@ if [ -n "$WORLD_ROOT" ] && [ "$CTX_PCT" != "?" ]; then
   echo "$CTX_PCT" > "$WORLD_ROOT/.alive/.context_pct" 2>/dev/null || true
 fi
 
+# Write session ID so skills like alive:feedback can identify this session
+# without guessing from the _squirrels directory.
+if [ -n "$WORLD_ROOT" ] && [ -n "$SESSION_ID" ]; then
+  echo "$SESSION_ID" > "$WORLD_ROOT/.alive/.session_id" 2>/dev/null || true
+fi
+
 # ── DEGRADED STATES ──
 
 if [ -z "$WORLD_ROOT" ]; then
