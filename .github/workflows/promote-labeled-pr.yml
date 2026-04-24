@@ -58,7 +58,7 @@ jobs:
             PR_NUMBER="${{ github.event.pull_request.number }}"
           fi
 
-          META=$(gh pr view "$PR_NUMBER" --repo alivecontext/alive-staging --json mergeCommit,title,url)
+          META=$(gh pr view "$PR_NUMBER" --repo alivecontext/alive-staging --json mergeCommit,title,url,body)
           MERGE_SHA=$(echo "$META" | jq -r '.mergeCommit.oid // empty')
           PR_TITLE=$(echo "$META" | jq -r '.title')
           PR_URL=$(echo "$META" | jq -r '.url')
@@ -68,9 +68,15 @@ jobs:
             exit 1
           fi
 
+          # Write staging body to a file for the Open PR step to read.
+          # Passing via GITHUB_OUTPUT breaks on certain multi-line markdown edge cases;
+          # a file handoff is simpler and handles any body content verbatim.
+          echo "$META" | jq -r '.body // ""' > "${RUNNER_TEMP}/staging-body.md"
+
           echo "pr_number=$PR_NUMBER"  >> "$GITHUB_OUTPUT"
           echo "merge_sha=$MERGE_SHA"  >> "$GITHUB_OUTPUT"
           echo "pr_url=$PR_URL"        >> "$GITHUB_OUTPUT"
+          echo "body_file=${RUNNER_TEMP}/staging-body.md" >> "$GITHUB_OUTPUT"
           {
             echo "pr_title<<PR_TITLE_EOF"
             echo "$PR_TITLE"
@@ -130,19 +136,20 @@ jobs:
           PR_URL="${{ steps.resolve.outputs.pr_url }}"
           MERGE_SHA="${{ steps.resolve.outputs.merge_sha }}"
 
+          STAGING_BODY_FILE="${{ steps.resolve.outputs.body_file }}"
+
           body=$(mktemp)
           {
-            echo "Promotes staging PR [#${PR_NUMBER}](${PR_URL}) to public via cherry-pick of its merge commit."
+            echo "Promoted from staging PR [#${PR_NUMBER}](${PR_URL}) (merge commit \`${MERGE_SHA:0:12}\`). Description below is the author's original staging PR body, verbatim."
             echo ""
-            echo "## Source"
+            echo "---"
             echo ""
-            echo "- Staging PR: ${PR_URL}"
-            echo "- Merge commit on staging: \`${MERGE_SHA:0:12}\`"
-            echo "- Original title: ${PR_TITLE}"
+            if [ -s "$STAGING_BODY_FILE" ]; then
+              cat "$STAGING_BODY_FILE"
+            else
+              echo "*Source PR had no description.*"
+            fi
             echo ""
-            echo "## Review"
-            echo ""
-            echo "Changes were tested on alive-staging before this promotion PR was opened. Review the cherry-picked diff; merge when ready to ship."
             echo ""
             echo "---"
             echo "*Automated by \`promote-labeled-pr.yml\` on alive-staging. Triggered by the \`promote\` label on the source PR.*"
