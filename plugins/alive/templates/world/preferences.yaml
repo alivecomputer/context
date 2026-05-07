@@ -14,6 +14,10 @@
 # health_nudges: true           # Surface stale walnut warnings proactively
 # feedback_nudges: true         # Suggest /alive:feedback after errors or hook failures
 
+# ─── GITHUB STAR PROMPT ──────────────────────────────────────────
+# Set to false to silence the star-prompt feature for this world.
+# github_star_ask: true
+
 # ─── PERMISSIONS ──────────────────────────────────────────────────
 # permissions:
 #   auto_create_walnuts: false   # Create walnuts without asking
@@ -28,6 +32,33 @@
 
 # ─── DISPLAY ─────────────────────────────────────────────────────
 # theme: vibrant                # vibrant | minimal | clean (companion app)
+
+# ─── DISCOVERY HINTS ─────────────────────────────────────────────
+# First-time-user hints shown in interactive commands.
+# discovery_hints: true           # auto-retires after first successful operation
+
+# ─── P2P SHARING ─────────────────────────────────────────────────
+# ALIVE P2P is opt-in. These settings control share/receive/relay behaviour.
+# Discovery hints use the top-level `discovery_hints:` key (above).
+#
+# p2p:
+#   share_presets:
+#     internal:
+#       exclude_patterns:
+#         - "**/observations.md"
+#     external:
+#       exclude_patterns:
+#         - "**/pricing*"
+#         - "**/invoice*"
+#         - "**/salary*"
+#         - "**/strategy*"
+#         - "**/observations.md"
+#   relay:
+#     url: null                   # GitHub repo URL for relay
+#     token_env: GH_TOKEN         # env var for GitHub token
+#   auto_receive: false           # Auto-import .walnut in 03_Inbox
+#   signing_key_path: "~/.alive/relay/keys/private.pem"
+#   require_signature: false      # Refuse unsigned packages on receive
 
 # ─── VOICE ───────────────────────────────────────────────────────
 # World-level voice defaults. Walnut-level config in _kernel/config.yaml overrides.

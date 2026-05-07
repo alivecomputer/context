@@ -21,6 +21,13 @@ import json
 from datetime import datetime, timezone
 from pathlib import Path
 
+# Shared helpers (see scripts/_common.py).
+_SCRIPTS_DIR = os.path.dirname(os.path.abspath(__file__))
+if _SCRIPTS_DIR not in sys.path:
+    sys.path.insert(0, _SCRIPTS_DIR)
+
+from _common import atomic_write_json, atomic_write_text  # noqa: E402
+
 
 def extract_frontmatter(filepath):
     """Extract YAML frontmatter from a markdown file."""
@@ -261,7 +268,6 @@ def main():
         # Read now.json — v3 first (_kernel/now.json), then v2 fallbacks
         phase = ''
         updated = ''
-        next_action = ''
         active_capsule = ''
         task_counts = {}
         bundle_summary = {}
@@ -277,11 +283,6 @@ def main():
                         now_data = json.load(nf)
                     phase = now_data.get('phase', '')
                     updated = now_data.get('updated', '')
-                    next_raw = now_data.get('next', '')
-                    if isinstance(next_raw, dict):
-                        next_action = next_raw.get('action', '')
-                    else:
-                        next_action = str(next_raw) if next_raw else ''
                     active_capsule = now_data.get('bundle', '')
 
                     # Enrich: task counts
@@ -391,7 +392,6 @@ def main():
             'capsule_count': capsule_count,
             'squirrel_sessions': squirrel_count,
             'active_capsule': active_capsule,
-            'next': next_action,
             'capsules': capsule_entries,
             'links': links,
             'tags': tags,
@@ -602,8 +602,6 @@ def main():
             lines.append(f'    squirrel_sessions: {w["squirrel_sessions"]}')
         if w['active_capsule']:
             lines.append(f'    active_capsule: {w["active_capsule"]}')
-        if w['next']:
-            lines.append(f'    next: {yaml_escape(w["next"])}')
         if w['capsules']:
             lines.append(f'    capsules:')
             for c in w['capsules']:
@@ -644,8 +642,10 @@ def main():
     output = '\n'.join(lines) + '\n'
 
     os.makedirs(alive_dir, exist_ok=True)
-    with open(index_file, 'w', encoding='utf-8') as f:
-        f.write(output)
+    # Atomic write fixes latent corruption on concurrent runs (previously
+    # used direct open('w') which truncates then streams -- a racing reader
+    # sees a zero-length or partial file).
+    atomic_write_text(index_file, output)
 
     # ─── Write JSON for graph consumption ───
     # Strip empty values for cleaner JSON
@@ -672,8 +672,11 @@ def main():
         'people': [clean(p) for p in people],
         'recent_sessions': [clean_session(rs) for rs in recent_sessions],
     }
-    with open(json_file, 'w', encoding='utf-8') as f:
-        json.dump(json_data, f, indent=2, default=str)
+    # Atomic JSON write. Values in json_data are all JSON-native
+    # (str/int/list/dict) because the clean() / clean_session() helpers
+    # emit only those types from the frontmatter/YAML we scraped. Fixes
+    # latent non-atomic-write corruption the plain open('w') path had.
+    atomic_write_json(json_file, json_data)
 
     print(f"Index: {index_file}")
     print(f"JSON:  {json_file}")

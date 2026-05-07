@@ -37,20 +37,20 @@ Show as a numbered list. Let the user pick.
 Read these three files for the named walnut. Nothing else at this stage.
 
 1. `_kernel/key.md` -- full (identity, people, links, rhythm)
-2. `_kernel/now.json` -- full (phase, next, bundles, tasks, sessions, blockers)
+2. `_kernel/now.json` -- full (phase, bundles, tasks, sessions, blockers)
 3. `_kernel/insights.md` -- first 20 lines only (frontmatter, section names)
 
 Show what you read:
 
 ```
 > key.md           [walnut name] -- [type], [rhythm], [N] people
-> now.json         Phase: [phase]. Next: [action]. Bundles: [N] active.
+> now.json         Phase: [phase]. Urgent: [N] / Active: [N]. Bundles: [N] active.
 > insights.md      [N] domain knowledge sections
 ```
 
 ## Spotted
 
-One observation grounded in what you just read. A stale blocker, an overdue next action, a bundle with no recent sessions. If nothing genuine, skip it.
+One observation grounded in what you just read. A stale blocker, an urgent task that has been sitting, a bundle with no recent sessions. If nothing genuine, skip it.
 
 ## Then Ask
 
@@ -58,16 +58,16 @@ One observation grounded in what you just read. A stale blocker, an overdue next
 [walnut name]
   Goal:    [from key.md]
   Phase:   [from now.json]
-  Next:    [from now.json next.action]
   Bundle:  [active bundle name] ([status])
 
   What are you working on?
-  1. Continue from next
-  2. Continue active bundle
-  3. Start something new
-  4. Go deeper (log, linked walnuts)
-  5. Just chat
+  1. Continue active bundle
+  2. Start new
+  3. Go deeper (log, linked walnuts)
+  4. Just chat
 ```
+
+If no active bundle exists, drop option 1 and renumber so the menu is `1. Start new  2. Go deeper  3. Just chat`.
 
 ## During Work
 

@@ -7,7 +7,13 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 source "$SCRIPT_DIR/alive-common.sh"
 
 read_hook_input
-find_world || exit 0
+
+# fn-15-la5.6: bridge fan-out -- helper is the SOLE emitter on the
+# no-world-found path.
+# // TODO(world-resolution-contract-v2): swap to find_world_or_die in cutover release
+if ! find_world_or_warn "${HOOK_EVENT:-PreToolUse}"; then
+  exit 0
+fi
 
 FILE_PATH=$(json_field "tool_input.file_path")
 [ -z "$FILE_PATH" ] && exit 0

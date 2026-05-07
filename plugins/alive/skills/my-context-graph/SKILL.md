@@ -121,7 +121,7 @@ Colors adapt per theme (lighter in dark mode for visibility).
 
 ### Interactive Controls
 
-- **Hover node** -> tooltip with goal, phase, bundle count, next action
+- **Hover node** -> tooltip with goal, phase, bundle count, urgent task count
 - **Hover node** -> highlight all connected nodes and edges, dim everything else
 - **Click walnut** -> expand bundles as orbiting nodes + open details panel
 - **Click node** -> pin details panel (right sidebar) with full context
@@ -136,7 +136,7 @@ Click any node to open a pinned side panel showing:
 - Name, domain badge, phase badge
 - Goal description
 - Metadata (rhythm, last updated, days since, session count)
-- Next action (highlighted)
+- Urgent + active task count badges (from the index's `task_counts` payload)
 - Bundle list with status badges (draft/prototype/published/done)
 - Active bundle highlighted in primary color
 - People list

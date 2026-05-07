@@ -1,0 +1,25 @@
+{
+  "tasks": [
+    {
+      "id": "lr-001",
+      "title": "Final go/no-go meeting one week before launch",
+      "status": "active",
+      "priority": "urgent",
+      "created": "2026-04-22"
+    },
+    {
+      "id": "lr-002",
+      "title": "Polaris confirms expedited delivery on the second Tuesday of April",
+      "status": "todo",
+      "priority": "todo",
+      "created": "2026-03-19"
+    },
+    {
+      "id": "lr-003",
+      "title": "Re-test docking-port hatch seal under cycled vacuum",
+      "status": "todo",
+      "priority": "urgent",
+      "created": "2026-03-02"
+    }
+  ]
+}

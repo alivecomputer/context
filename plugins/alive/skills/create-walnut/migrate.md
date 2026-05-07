@@ -268,8 +268,8 @@ brain_routing:
   now.json:
     sources:
       - file: _brain/status.md
-        extract: [current phase, state of play, priorities, blockers, next milestone, key dates, travel constraints]
-    sections_to_write: [phase, next, context synthesis paragraph, projections]
+        extract: [current phase, state of play, priorities, blockers, key dates, travel constraints]
+    sections_to_write: [phase, context synthesis paragraph, projections]
   tasks.md:
     sources:
       - file: _brain/tasks.md
@@ -425,8 +425,9 @@ Dispatch exactly 4 subagents simultaneously — one per brain target file. Each 
 > - `phase:` — extract from source (e.g., "building", "testing", "launching")
 > - `health:` active (it's being migrated, so it's active)
 > - `updated:` today's date
-> - `next:` — the single most important next action from the source
 > - `squirrel:` {session_id}
+>
+> The immediate-action signal lives in the urgent + active task lists rather than a dedicated schema field. Capture the single most important upcoming action from the source as an urgent task in `tasks.md` (Urgent section).
 >
 > **Context:** — a zero-context synthesis. A brand new agent reading ONLY this file should understand the full current situation. 3-5 paragraphs covering:
 >   - What phase the venture/project is in and what's the immediate goal
@@ -434,7 +435,8 @@ Dispatch exactly 4 subagents simultaneously — one per brain target file. Each 
 >   - What's in progress right now
 >   - Key blockers, constraints, deadlines
 >   - Important people context (who's doing what, who's away, travel plans)
->   - What's coming next
+>
+> The forward-looking "what's about to happen" signal lives in the urgent + active task lists in `tasks.md`, not in this paragraph. Keep `Context:` focused on situation, not queue.
 >
 > This is the most important file for session continuity. Write it like a briefing document.
 >
@@ -530,9 +532,6 @@ The log guardian hook blocks the `Write` tool on any file named `log.md`. This i
 ### Work Done
 - What was built, written, shipped
 
-### Next
-- What the next squirrel should pick up
-
 signed: squirrel:{original_session_id}
 ```
 
@@ -597,7 +596,7 @@ If a subagent failed, report the failure and offer to retry that specific subage
 │  {walnut-name} migrated from {source_path}
 │
 │  ▸ key.md — {summary: N people, tags, context}
-│  ▸ now.json — phase: {phase}, next: {next action}
+│  ▸ now.json — phase: {phase}
 │  ▸ log.md — {N} entries (migration + recent history)
 │  ▸ insights.md — {N} insights across {categories}
 │  ▸ bundles/_inbox/tasks.md — {N}+ tasks migrated

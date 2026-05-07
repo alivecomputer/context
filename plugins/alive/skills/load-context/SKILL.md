@@ -42,7 +42,7 @@ Show available walnuts as a numbered list grouped by domain:
 Read these three files. That's it — everything you need to orient.
 
 1. `_kernel/key.md` — full file (identity, people, links, rhythm)
-2. `_kernel/now.json` — full file (phase, next action, bundle statuses with task summaries, recent sessions, nested walnut state, blockers, context paragraph)
+2. `_kernel/now.json` — full file (phase, bundle statuses with task summaries, recent sessions, nested walnut state, blockers, context paragraph)
 3. `_kernel/insights.md` — frontmatter only (what domain knowledge sections exist)
 4. **Claim this session for the walnut** — Edit `.alive/_squirrels/{your-session-id}.yaml` and change the `walnut:` field from `null` to the walnut's directory basename (e.g. `walnut: berties`, `walnut: alive-os`). Your session ID is in the SessionStart injection at the top of context (`Session ID: ...`); the squirrel YAML lives under the world's `.alive/_squirrels/` directory using the full UUID as the filename. **This step is mandatory, not optional.** Cross-session hooks (`alive-context-watch.sh`, the statusline, `project.py`'s recent-sessions aggregator) all read `walnut:` from this YAML to know which walnut you're on. If you skip this, parallel-session change detection silently no-ops, the statusline shows the wrong context, and projections under-count your activity. Use a single Edit with `old_string: "walnut: null"` and `new_string: "walnut: {name}"`. If the YAML already has a different walnut name (rare — cross-walnut session), leave it and surface the conflict to the human.
 
@@ -54,7 +54,7 @@ Show `>` reads as you go, and surface the claim:
 
 ```
 > _kernel/key.md           Lock-in Lab — launching, weekly rhythm, 3 people
-> _kernel/now.json          Phase: launching. Bundle: official-launch. Next: Draft PCM essay.
+> _kernel/now.json          Phase: launching. Bundle: official-launch.
                             Active bundles: 2 (official-launch: 1 urgent, 18 todo; research: 4 todo)
                             Blockers: none. Recent: 3 sessions.
 > _kernel/insights.md       4 domain knowledge sections
@@ -72,7 +72,8 @@ If a legacy format is found, surface the upgrade warning before continuing:
 │  Found v2 state at _kernel/_generated/now.json.
 │  The system works but projections, tasks, and world speed are degraded.
 │
-│  ▸ Run /alive:system-upgrade to migrate.
+│  ▸ Preview the upgrade first: /alive:system-upgrade --dry-run --plan-output /tmp/upgrade-plan.txt
+│  Then run: /alive:system-upgrade
 ╰─
 ```
 If NOTHING is found, the walnut has no state — read `_kernel/log.md` as last resort.
@@ -81,8 +82,9 @@ If NOTHING is found, the walnut has no state — read `_kernel/log.md` as last r
 
 Extract and display from now.json's structure:
 
-- **Phase** and **next action** — `next` is an object with `action`, `bundle`, and `why` fields
+- **Phase** — current phase string
 - **Active bundles** — each bundle entry has task counts and flags for urgent items
+- **Urgent + active tasks** — `unscoped_tasks.urgent` and `unscoped_tasks.active` lists; the urgent list is the implicit next-action signal
 - **Blockers** — surface any, or say "none"
 - **Recent sessions** — count and brief summary
 - **Nested walnuts** — from the `children` field, show any child walnut state worth noting
@@ -143,7 +145,7 @@ If `now.json` has a `bundle:` field pointing to an active bundle, offer to deep-
 
 **Deep load reads:**
 
-1. **`{name}/context.manifest.yaml`** — full file (context, changelog, work log, session history)
+1. **`{walnut}/{name}/context.manifest.yaml`** — full file (context, changelog, work log, session history). In v3 bundles are flat at the walnut root; for legacy v2 worlds fall back to `bundles/{name}/context.manifest.yaml`.
 2. **`tasks.py list --walnut {path} --bundle {name}`** — call the script for the detailed task view. Do NOT read `tasks.json` directly; the script is the interface.
 3. **Write `active_sessions:` entry** to the bundle's `context.manifest.yaml` — claim this session so other agents know you're here.
 
@@ -162,7 +164,7 @@ If `active_sessions:` shows another agent is working on this bundle, warn:
 
 One observation before asking what to work on. Fires after the load sequence, grounded in the context just loaded.
 
-The brief pack gives you everything: phase, bundles, tasks, blockers, recent sessions, nested walnuts. Find something worth noticing — a blocker that's been sitting, a bundle with no recent sessions, a next action that's overdue, a pattern across task counts.
+The brief pack gives you everything: phase, bundles, tasks, blockers, recent sessions, nested walnuts. Find something worth noticing — a blocker that's been sitting, a bundle with no recent sessions, an urgent task that's overdue, a pattern across task counts.
 
 ```
 ╭─ 🐿️ spotted
@@ -183,20 +185,24 @@ After the Spotted observation, prompt with bundle awareness:
 ╭─ 🐿️ nova-station
 │  Goal:    Build the first civilian orbital tourism platform
 │  Phase:   testing
-│  Next:    Review telemetry from test window
 │  Bundle:  shielding-review (draft, draft-02)
 │
 │  ▸ What are you working on?
-│  1. Continue from next (review telemetry)
-│  2. Continue bundle (shielding-review)
-│  3. Start something new (creates bundle)
-│  4. Go deeper (log history, linked walnuts, full insights)
-│  5. Just chat
+│  1. Continue bundle (shielding-review)
+│  2. Start new (creates bundle)
+│  3. Go deeper (log history, linked walnuts, full insights)
+│  4. Just chat
 ```
 
-If the human picks "start something new" -> invoke `alive:bundle` (create operation).
+If the human picks "Start new" -> invoke `alive:bundle` (create operation).
 
-If no active bundle exists, show options 1, 3, 4, 5 only (skip option 2).
+If no active bundle exists, show only:
+
+```
+│  1. Start new
+│  2. Go deeper
+│  3. Just chat
+```
 
 ---
 
@@ -208,17 +214,16 @@ If the Bundle Prompt section is used, skip this. This section remains for backwa
 ╭─ 🐿️ nova-station
 │  Goal:    Build the first civilian orbital tourism platform
 │  Phase:   testing
-│  Next:    Review telemetry from test window
 │
 │  ▸ What to work on?
-│  1. Continue from next (review telemetry)
-│  2. Load full context (log entries, linked walnuts)
+│  1. Start new
+│  2. Go deeper (log entries, linked walnuts)
 │  3. Just chat
 ╰─
 ```
 
-"Continue from next" — jump straight into the next action.
-"Load full context" — reads log frontmatter, recent entries, expands linked walnuts.
+"Start new" — pick up an urgent task or create a new bundle.
+"Go deeper" — reads log frontmatter, recent entries, expands linked walnuts.
 "Just chat" — freestyle, the squirrel loads more later if needed.
 
 ---

@@ -25,7 +25,4 @@
 ### References
 <!-- Any content captured this session. Pointer to companion files. -->
 
-### Next
-<!-- What the next squirrel should pick up. Feeds into now.md next: field. -->
-
 signed: squirrel:{{session_id}}

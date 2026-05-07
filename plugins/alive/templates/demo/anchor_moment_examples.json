@@ -1,0 +1,49 @@
+{
+  "_note": "Few-shot exemplars for the Stage 0 spine generator's anchor_moments output and for the Stage 1 confirmation UX voice contract. Reviewed status tracked in templates/demo/exemplars/README.md. The five entries cover the locked diversity dimensions: career-pivot, relationship-shift, loss, creative-breakthrough, identity-shift. Hooks are 80-150 words, written in second person, with no em dashes (standing voice rule). Slugs and entity refs are illustrative and do not correspond to any real ALIVE world.",
+  "schema_version": "0.1",
+  "authored_by": "alive-team",
+  "reviewed_by": "alive-team",
+  "reviewed_at": "2026-04-29T00:00:00Z",
+  "examples": [
+    {
+      "id": "career-pivot-illustrative-001",
+      "diversity_dimension": "career-pivot",
+      "name": "The morning the law firm offer arrived",
+      "date": "2019-03-04",
+      "hook": "The offer letter sits on the kitchen counter at six in the morning, printed twice because the first copy came out crooked. You have read it three times. Senior associate, Melbourne office, the salary you used to picture when picturing what success would feel like. The coffee is cold by the time you put the page down. Outside the window the magnolia is dropping petals onto the back step in slow handfuls. You think about the half-finished startup pitch deck on the laptop in the spare room, the three founders waiting on a yes by Friday. The cursor on the kitchen clock blinks. You already know which conversation will happen first today, and which one will not.",
+      "entity_refs": ["place:melbourne-cbd", "person:partner-rowan"]
+    },
+    {
+      "id": "relationship-shift-illustrative-001",
+      "diversity_dimension": "relationship-shift",
+      "name": "The walk back from the school play",
+      "date": "2022-09-17",
+      "hook": "The walk home from the primary school auditorium runs ten minutes downhill through the plane trees on Curzon Street. Your eight-year-old is holding the cardboard moon she carried across the stage, one paper edge already starting to fray. Halfway down the hill she asks the question you have been folding away for nearly a year, the one about whether her father is going to live in the new flat for good or just for now. The streetlight at the corner is broken. You answer in the smallest sentence you can find that is also true. She squeezes the moon a little tighter and keeps walking, and the silence between you carries a weight that is not yet grief but is no longer denial.",
+      "entity_refs": ["person:daughter-mira", "place:curzon-street"]
+    },
+    {
+      "id": "loss-illustrative-001",
+      "diversity_dimension": "loss",
+      "name": "The Wednesday the studio closed",
+      "date": "2024-06-12",
+      "hook": "The padlock arrives on a Wednesday, two weeks earlier than the lease termination notice promised. You stand in the doorway of the print studio you opened nine years ago and watch the building manager cut the loop with bolt cutters borrowed from the ironmonger across the street. The smell of soy ink is still in the room, and the press table is still scattered with proof sheets from the artist run last Sunday. You take three things off the wall: a calendar, a Polaroid of the first commission, a thank-you note from a customer who is now older than her first child was when she signed it. You do not cry until later, in the carpark, after the manager has driven away and only the cooling engine of your own car is making any sound.",
+      "entity_refs": ["place:fitzroy-print-studio", "person:building-manager-yusuf"]
+    },
+    {
+      "id": "creative-breakthrough-illustrative-001",
+      "diversity_dimension": "creative-breakthrough",
+      "name": "The night the second album finally clicked",
+      "date": "2021-11-08",
+      "hook": "The second album has been stuck for fourteen months. Every song you record sounds like a worse version of the first record. At three in the morning, alone in the home studio with the heater humming, you stop trying to write the next track and instead play back the rough demos in reverse order. Track twelve, then eleven, then ten. Somewhere around track seven you notice that the bass line you dismissed in May is the actual spine of the album, and every other song has been hiding behind it. You stop the playback. You write four sentences in a notebook, in pencil. By the time the sun comes up you have rewritten the running order twice and called the producer to say that the record now exists, even if she will not believe it until Tuesday.",
+      "entity_refs": ["place:home-studio", "person:producer-anna"]
+    },
+    {
+      "id": "identity-shift-illustrative-001",
+      "diversity_dimension": "identity-shift",
+      "name": "The hospital car park, after the diagnosis",
+      "date": "2023-02-21",
+      "hook": "The car park at the neurology clinic is on the third floor, and your car is the second one in from the lift. You sit in the driver's seat for nineteen minutes without starting the engine. The diagnosis is not the worst version of itself, the consultant said, but it is permanent, and it explains the last decade. You think about the years of being told to try harder, of trying harder, of believing the gap between effort and result was a moral failure. The label on the prescription pad is also a kind of mirror. By the time you drive out of the car park the city looks the same and the steering wheel feels different, and you know, in a quiet way, that the next phone call will be to your sister, who has been waiting eight years for someone official to use the word.",
+      "entity_refs": ["place:royal-melbourne-clinic", "person:sister-deepa"]
+    }
+  ]
+}

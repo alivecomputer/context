@@ -33,12 +33,12 @@ Read all active walnuts. Surface what matters. Deliver to Telegram.
 Morning -- [date]
 
 PRIORITY
-[walnut]: [urgent task or overdue next action]
-[walnut]: [urgent task or overdue next action]
+[walnut]: [top urgent task]
+[walnut]: [top urgent task]
 
 ACTIVE
-[walnut] [phase] [next action]
-[walnut] [phase] [next action]
+[walnut] [phase] [top urgent or active task]
+[walnut] [phase] [top urgent or active task]
 
 NEEDS ATTENTION
 [walnut] waiting [N] days past [rhythm]

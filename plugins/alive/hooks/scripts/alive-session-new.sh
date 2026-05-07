@@ -14,6 +14,14 @@ read_hook_input
 read_session_fields
 
 # Find world root
+# fn-15-la5.6: We still want to inject the onboarding payload (rules,
+# setup hint) on no-world-found, but the SOLE-emitter contract requires
+# the bridge helper to be the only thing that writes JSON to stdout.
+# So: build the payload, pipe it to find_world_or_warn on stdin, let
+# the helper merge the bridge message and emit ONCE. The helper returns
+# 1 in-bash when find_world failed, which we trap with `if !` so we
+# `exit 0` cleanly without emitting anything ourselves.
+# // TODO(world-resolution-contract-v2): swap to find_world_or_die in cutover release
 if ! find_world; then
   # No world found -- still inject rules so the AI knows how to run setup
   PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(cd "$SCRIPT_DIR/../.." && pwd)}"
@@ -59,21 +67,45 @@ Run /alive:world to start -- it will detect the fresh install and route to setup
 The following are your core operating rules for the ALIVE Context System. They are MANDATORY -- not suggestions, not defaults, not guidelines. You MUST follow them in every response, every tool call, every session.
 </EXTREMELY_IMPORTANT>"
 
-  SETUP_ESCAPED=$(escape_for_json "$SETUP_MSG")
-  PREAMBLE_ESCAPED=$(escape_for_json "$PREAMBLE")
-  RUNTIME_ESCAPED=$(escape_for_json "$RUNTIME_RULES")
+  ONBOARDING_CONTEXT="${SETUP_MSG}
 
-  CONTEXT="${SETUP_ESCAPED}\n\n${PREAMBLE_ESCAPED}\n\n${RUNTIME_ESCAPED}"
+${PREAMBLE}
 
-  cat <<HOOKEOF
-{
-  "additional_context": "${CONTEXT}",
+${RUNTIME_RULES}"
+
+  # Build the onboarding payload as a real JSON object (no shell-quoted
+  # heredoc -- that approach was brittle on multi-line content with
+  # internal quotes). Pipe to the bridge helper on stdin so it can
+  # merge the bridge-warn message and emit ONE JSON object.
+  if [ "$ALIVE_JSON_RT" = "python3" ]; then
+    ALIVE_ONBOARDING_CONTEXT="$ONBOARDING_CONTEXT" python3 -c '
+import json, os, sys
+ctx = os.environ.get("ALIVE_ONBOARDING_CONTEXT", "")
+sys.stdout.write(json.dumps({
+  "additional_context": ctx,
   "hookSpecificOutput": {
     "hookEventName": "SessionStart",
-    "additionalContext": "${CONTEXT}"
+    "additionalContext": ctx
   }
-}
-HOOKEOF
+}))
+' | find_world_or_warn "${HOOK_EVENT:-SessionStart}" || true
+  elif [ "$ALIVE_JSON_RT" = "node" ]; then
+    ALIVE_ONBOARDING_CONTEXT="$ONBOARDING_CONTEXT" node -e '
+const ctx = process.env.ALIVE_ONBOARDING_CONTEXT || "";
+process.stdout.write(JSON.stringify({
+  additional_context: ctx,
+  hookSpecificOutput: {
+    hookEventName: "SessionStart",
+    additionalContext: ctx
+  }
+}));
+' | find_world_or_warn "${HOOK_EVENT:-SessionStart}" || true
+  else
+    # No JSON runtime -- we can't safely build a payload to pipe in.
+    # The helper falls back to emitting {} on no-payload. Better than
+    # producing malformed JSON that breaks Claude Code's hook parser.
+    find_world_or_warn "${HOOK_EVENT:-SessionStart}" </dev/null || true
+  fi
 
   exit 0
 fi
@@ -90,9 +122,16 @@ TIMESTAMP=$(date -u +"%Y-%m-%dT%H:%M:%S")
 PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(cd "$SCRIPT_DIR/../.." && pwd)}"
 
 # Set env vars via CLAUDE_ENV_FILE if available
+# fn-15-la5.6: ALIVE_WORLD_ROOT_SOURCE=session is the migration-hint
+# discriminator (T7) that distinguishes "user-set in shell" (override)
+# from "session-mirrored by hook" (this write). Without it, the
+# session-mirror unconditionally overwriting $ALIVE_WORLD_ROOT made
+# "$ALIVE_WORLD_ROOT is set" an unreliable signal that the user
+# pre-set it.
 if [ -n "${CLAUDE_ENV_FILE:-}" ]; then
   echo "ALIVE_SESSION_ID=$SESSION_ID" >> "$CLAUDE_ENV_FILE"
   echo "ALIVE_WORLD_ROOT=$WORLD_ROOT" >> "$CLAUDE_ENV_FILE"
+  echo "ALIVE_WORLD_ROOT_SOURCE=session" >> "$CLAUDE_ENV_FILE"
   echo "ALIVE_PLUGIN_ROOT=$PLUGIN_ROOT" >> "$CLAUDE_ENV_FILE"
 fi
 

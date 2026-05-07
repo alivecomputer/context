@@ -261,16 +261,21 @@ def _build_walnut_briefing(world_root: Path, walnut_rel: str) -> str:
         if phase:
             state_lines.append(f"Phase: {phase}")
 
-        next_action = now.get("next", {})
-        if isinstance(next_action, dict):
-            action = next_action.get("action", "")
-            why = next_action.get("why", "")
-            if action:
-                state_lines.append(f"Next: {action}")
-            if why:
-                state_lines.append(f"Why: {why}")
-        elif isinstance(next_action, str) and next_action:
-            state_lines.append(f"Next: {next_action}")
+        # The dedicated next-action field has been retired. Surface the
+        # urgent + active task lists from `unscoped_tasks` instead -- they
+        # carry the immediate-action signal in the current schema.
+        unscoped = now.get("unscoped_tasks", {})
+        if isinstance(unscoped, dict):
+            urgent = unscoped.get("urgent") or []
+            active = unscoped.get("active") or []
+            if urgent:
+                state_lines.append(f"Urgent: {urgent[0]}")
+                if len(urgent) > 1:
+                    state_lines.append(f"  (+{len(urgent) - 1} more urgent)")
+            if active:
+                state_lines.append(f"Active: {active[0]}")
+                if len(active) > 1:
+                    state_lines.append(f"  (+{len(active) - 1} more active)")
 
         blockers = now.get("blockers", [])
         if blockers:

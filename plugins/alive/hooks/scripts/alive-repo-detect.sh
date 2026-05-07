@@ -9,7 +9,11 @@ source "$SCRIPT_DIR/alive-common.sh"
 
 read_hook_input
 
-if ! find_world; then
+# fn-15-la5.6: bridge fan-out -- helper is the SOLE emitter on the
+# no-world-found path. The explicit ``if !`` form survives ``set -euo
+# pipefail`` (which this hook sets above) cleanly.
+# // TODO(world-resolution-contract-v2): swap to find_world_or_die in cutover release
+if ! find_world_or_warn "${HOOK_EVENT:-SessionStart}"; then
   exit 0
 fi
 

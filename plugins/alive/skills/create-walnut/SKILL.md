@@ -244,7 +244,6 @@ Structure is flat: everything lives directly in `_kernel/`. No `_generated/` sub
       "phase": "starting",
       "updated": "YYYY-MM-DDTHH:MM:SSZ",
       "squirrel": null,
-      "next": {"action": "{goal}", "bundle": null, "why": null},
       "bundles": {"active": {}, "recent": {}, "summary": {"total": 0, "done": 0, "draft": 0, "prototype": 0, "published": 0}},
       "unscoped_tasks": {"urgent": [], "active": [], "todo": [], "counts": {"urgent": 0, "active": 0, "todo": 0, "blocked": 0}},
       "recent_sessions": [],

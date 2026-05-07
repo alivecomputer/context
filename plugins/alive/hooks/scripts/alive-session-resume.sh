@@ -9,9 +9,28 @@ source "$SCRIPT_DIR/alive-common.sh"
 
 read_hook_input
 read_session_fields
-find_world || { echo "No Alive world found."; exit 0; }
+
+# fn-15-la5.6: bridge fan-out -- helper is the SOLE emitter on the
+# no-world-found path. Previously echoed "No Alive world found." which
+# was not valid hook JSON.
+# // TODO(world-resolution-contract-v2): swap to find_world_or_die in cutover release
+if ! find_world_or_warn "${HOOK_EVENT:-SessionStart}"; then
+  exit 0
+fi
 
 SESSION_ID="${HOOK_SESSION_ID}"
+
+# fn-15-la5.6: env-file mirror parity with alive-session-new.sh. Today
+# only alive-session-new.sh writes the env-file mirror, so resumed
+# sessions saw inconsistent ALIVE_WORLD_ROOT_SOURCE state vs fresh
+# sessions and downstream tools that read $ALIVE_WORLD_ROOT got nothing
+# on resume. ALIVE_WORLD_ROOT_SOURCE=session is the migration-hint
+# discriminator (T7) that distinguishes "user-set in shell" from
+# "session-mirrored by hook"; both startup and resume must write it.
+if [ -n "${CLAUDE_ENV_FILE:-}" ]; then
+  echo "ALIVE_WORLD_ROOT=$WORLD_ROOT" >> "$CLAUDE_ENV_FILE"
+  echo "ALIVE_WORLD_ROOT_SOURCE=session" >> "$CLAUDE_ENV_FILE"
+fi
 
 # Resolve preferences
 source "$SCRIPT_DIR/alive-resolve-preferences.sh"

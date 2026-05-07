@@ -182,18 +182,13 @@ now.json lives at `_kernel/now.json`. It is computed by `project.py` post-save f
   "phase": "testing",
   "updated": "2026-02-23T14:00:00",
   "bundle": "shielding-review",
-  "next": {
-    "action": "Review telemetry from test window",
-    "bundle": "shielding-review",
-    "why": "Test window is March 4 — need telemetry reviewed before go/no-go"
-  },
   "bundles": {
     "active": [
       {
         "name": "shielding-review",
         "status": "draft",
         "goal": "Evaluate shielding vendors for orbital module",
-        "next": "Review telemetry from test window",
+        "tasks": {"counts": {"urgent": 1, "active": 0, "todo": 3, "blocked": 0}},
         "updated": "2026-02-23T14:00:00"
       }
     ],
@@ -226,8 +221,7 @@ now.json lives at `_kernel/now.json`. It is computed by `project.py` post-save f
     {
       "name": "glass-cathedral",
       "phase": "design",
-      "health": "active",
-      "next": "Finalize interior layout"
+      "health": "active"
     }
   ],
   "blockers": [
@@ -238,9 +232,7 @@ now.json lives at `_kernel/now.json`. It is computed by `project.py` post-save f
 }
 ```
 
-`next:` is an object with action, bundle, and why. `bundles:` has three tiers — `active` (full detail), `recent` (light), `summary` (counts). Health is derived (see Health Signals below), not stored.
-
-**next: protection:** At save, the squirrel checks whether the previous `next:` was completed. If not, it surfaces the conflict. The previous `next:` is never silently dropped.
+`bundles:` has three tiers — `active` (full detail), `recent` (light), `summary` (counts). Health is derived (see Health Signals below), not stored. The urgent + active task lists in `unscoped_tasks` and per-bundle `tasks` carry the immediate-action signal — there is no separate top-level field for it.
 
 ---
 

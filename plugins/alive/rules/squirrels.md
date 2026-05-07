@@ -41,7 +41,7 @@ Never answer from memory. Never guess at what's in a file. Read it.
 Before responding about any walnut, read the core read sequence:
 
 1. `_kernel/key.md` — full file (identity, people, links, rhythm)
-2. `_kernel/now.json` — full file (current state — bundles, tasks, sessions, context, phase, next)
+2. `_kernel/now.json` — full file (current state — bundles, tasks, sessions, context, phase)
 3. `_kernel/insights.md` — frontmatter only (what domain knowledge sections exist)
 
 Show `|` reads. If you haven't read the file, say so — don't invent what might be in it.
@@ -182,7 +182,7 @@ When the human installs or mentions other Claude Code plugins, MCP servers, or t
 At the start of EVERY session, before doing anything else, the squirrel reads these files in order:
 
 1. `_kernel/key.md` — full file (identity, people, links, rhythm)
-2. `_kernel/now.json` — full file (current state — bundles, tasks, sessions, context, phase, next)
+2. `_kernel/now.json` — full file (current state — bundles, tasks, sessions, context, phase)
 3. `_kernel/insights.md` — frontmatter only (what domain knowledge sections exist)
 
 That's it. Three files. Everything the squirrel needs to orient is in these three files.
@@ -304,7 +304,7 @@ SAVE (checkpoint -- repeatable)
   |-- Scan back for missed stash items
   |-- Present stash grouped by type (numbered list per category)
   |-- Confirm stash -> route decisions/tasks/notes
-  |-- Write log entry -> prepend to _kernel/log.md (narrative, phase, next)
+  |-- Write log entry -> prepend to _kernel/log.md (narrative, phase)
   |-- Update active bundle's context.manifest.yaml (context, status)
   |-- Route tasks via tasks.py (add/done/edit -- Bash calls, no file reads)
   |-- Update squirrel YAML (recovery_state, stash, actions)
@@ -445,9 +445,9 @@ Enforced on every save. The test:
 now.json completeness is GUARANTEED by the projection script (`project.py`). It reads ALL sources every time — log entries, bundle manifests, task data, squirrel entries — and aggregates them into a single snapshot. The agent does not need to manually assemble state.
 
 The agent's responsibility is writing good source data:
-- **Log entries** — narrative, phase, next action (the judgment call)
+- **Log entries** — narrative and phase (the judgment call)
 - **Bundle manifests** — context field, status updates
-- **Tasks** — routed via `tasks.py` (add/done/edit)
+- **Tasks** — routed via `tasks.py` (add/done/edit). Urgent + active tasks carry the next-action signal.
 
 The script handles the aggregation. If the source data is good, now.json will be complete. If the answer to the zero-context test isn't clearly yes, the problem is in the source data — fix the log entry or manifest before completing the save.
 
@@ -566,7 +566,7 @@ If yes: dispatch agents to read each session's transcript JSONL and extract any 
 The full save protocol lives in the `alive:save` skill. These rules define the principles:
 
 1. **Confirm stash** — present all items grouped by type (decisions / tasks / notes). Human confirms, drops, or edits. Route decisions/tasks/notes to their destinations.
-2. **Write log entry** — prepend to `_kernel/log.md`. This IS the judgment — narrative, phase, next action. The agent's most important write.
+2. **Write log entry** — prepend to `_kernel/log.md`. This IS the judgment — narrative and phase. The agent's most important write.
 3. **Update active bundle** — `{name}/context.manifest.yaml` context field, status.
 4. **Route tasks** — via `tasks.py` (add/done/edit — Bash calls, no file reads). The agent never reads or writes task files directly.
 5. **Update squirrel** — YAML entry gets save count incremented, stash recorded, `recovery_state` updated.

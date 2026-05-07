@@ -44,7 +44,7 @@ If files exist, list them with routing suggestions.
 ## 3. Read All Active Walnuts
 
 For each non-archive walnut, read `_kernel/now.json`. Extract:
-- Phase, next action, blockers, urgent tasks, health signal
+- Phase, blockers, urgent + active task lists, health signal
 
 ## 4. Check Unrouted Stash
 
@@ -64,12 +64,12 @@ Scan `.alive/_squirrels/` for entries with `saves: 0`. These sessions may have l
 Morning -- [date]
 
 Priority:
-  1. [walnut] -- [urgent task or next action]
-  2. [walnut] -- [urgent task or next action]
+  1. [walnut] -- [top urgent task]
+  2. [walnut] -- [top urgent task]
 
 Active (on rhythm):
-  [walnut]     [phase]     [next action]
-  [walnut]     [phase]     [next action]
+  [walnut]     [phase]     [top urgent or active task]
+  [walnut]     [phase]     [top urgent or active task]
 
 Needs Attention:
   [walnut]     waiting     [N] days past rhythm

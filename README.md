@@ -1,4 +1,5 @@
 <p align="center">
+  <a href="https://github.com/alivecontext/alive/releases"><img src="https://img.shields.io/badge/version-3.2.0-F97316?style=flat" alt="Version"></a>
   <a href="https://github.com/alivecontext/alive/stargazers"><img src="https://img.shields.io/github/stars/alivecontext/alive?style=flat&color=F97316&label=Stars" alt="GitHub Stars"></a>
   <a href="https://github.com/alivecontext/alive/blob/main/LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="MIT License"></a>
   <a href="https://x.com/ALIVE_context"><img src="https://img.shields.io/badge/𝕏-@ALIVE_context-000000?logo=x&logoColor=white" alt="@ALIVE_context"></a>
@@ -206,15 +207,16 @@ Requires [Claude Code](https://docs.anthropic.com/en/docs/claude-code) + Python 
 | `/alive:session-context-rebuild` | Rebuild context from past sessions |
 | `/alive:system-upgrade` | Upgrade from any previous version |
 
-### Upgrading from v1
+### Upgrading
 
 ```bash
 claude plugin install alive@alivecontext
 
+/alive:system-upgrade --dry-run --plan-output /tmp/upgrade-plan.txt
 /alive:system-upgrade
 ```
 
-The upgrade skill mines your existing system, shows you what will change, and migrates everything. Your old plugin keeps working — nothing breaks.
+The upgrade skill works against any prior version (v1, v2, v3.0, v3.1, v3.2). It detects what's there via content fingerprints, shows you a plan first (`--dry-run`), backs everything up to a versioned tarball, and migrates only what needs migrating. Multi-surface aware — if you run `alive-mcp` or Hermes alongside the plugin, their migrators are dispatched too. Partial-failure resume via `--resume`. Inspection-mode rollback via `--rollback`. Your old plugin keeps working — nothing breaks.
 
 ---
 
@@ -279,6 +281,10 @@ No cloud. No account. No vendor lock-in. Git-track it if you want version histor
 - Integrations registry — track every API, service, and connection across your world
 
 ---
+
+## A small ask
+
+ALIVE is open source. As you use it, the plugin will surface a small invitation a handful of times — two soft inline lines and three full asks across your first sixty sessions, plus an occasional one-line nudge after `/alive:save`. After that it goes quiet, whether you star or not. The star is fired through your own `gh` CLI (browser fallback if `gh` isn't authenticated); nothing leaves your machine except the star itself. Silence it any time by setting `github_star_ask: false` in `.alive/preferences.yaml`.
 
 ## Contributing
 

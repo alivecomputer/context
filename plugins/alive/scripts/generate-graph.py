@@ -113,7 +113,6 @@ def build_graph_data(walnuts, people, today):
             'phase': w.get('phase', ''),
             'rhythm': w.get('rhythm', ''),
             'updated': updated,
-            'next': w.get('next', ''),
             'size': round(size, 1),
             'daysSince': days,
             'bundleCount': bundles,
@@ -284,7 +283,6 @@ body {{
 }}
 .tt-goal {{ color: var(--text-dim); margin-bottom: 3px; line-height: 1.4; font-size: 11px; }}
 .tt-meta {{ color: var(--text-muted); font-size: 10px; }}
-.tt-next {{ margin-top: 5px; padding-top: 5px; border-top: 1px solid var(--border); font-size: 10px; color: var(--text-dim); }}
 
 .link {{ fill: none; stroke-opacity: 0.25; }}
 .link-parent {{ stroke-dasharray: 4 3; }}
@@ -351,11 +349,6 @@ body {{
   color: var(--text-muted); margin-bottom: 4px; font-weight: 600;
 }}
 #detail-panel .dp-goal {{ color: var(--text-dim); line-height: 1.5; margin-bottom: 12px; }}
-#detail-panel .dp-next {{
-  background: var(--bg); border-radius: 4px; padding: 8px 10px;
-  border-left: 3px solid var(--ventures); color: var(--text-dim);
-  line-height: 1.4; margin-bottom: 12px;
-}}
 #detail-panel .dp-item {{ padding: 3px 0; color: var(--text-dim); }}
 #detail-panel .dp-item.clickable {{ cursor: pointer; color: var(--text); }}
 #detail-panel .dp-item.clickable:hover {{ text-decoration: underline; }}
@@ -736,9 +729,6 @@ function buildGraph() {{
     if (d.sessions) meta.push(`${{d.sessions}} sessions`);
     if (d.peopleList && d.peopleList.length) meta.push(d.peopleList.join(', '));
     if (meta.length) html += `<div class="tt-meta">${{meta.join(' &middot; ')}}</div>`;
-    if (d.next) html += `<div class="tt-next"><b>Next:</b> ${{
-      typeof d.next === 'string' ? d.next.slice(0,100) : ''
-    }}</div>`;
 
     tooltip.html(html).style('opacity', 1);
   }}
@@ -771,13 +761,6 @@ function openDetailPanel(d, nbrs) {{
 
   if (data.goal) {{
     html += `<div class="dp-goal">${{data.goal}}</div>`;
-  }}
-
-  if (data.next) {{
-    const nextText = typeof data.next === 'string' ? data.next : (data.next.action || '');
-    if (nextText) {{
-      html += `<div class="dp-next"><strong>Next:</strong> ${{nextText.slice(0, 200)}}</div>`;
-    }}
   }}
 
   // Blockers

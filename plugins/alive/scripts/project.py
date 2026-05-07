@@ -15,6 +15,14 @@ import subprocess
 import sys
 from datetime import datetime, timezone
 
+# Shared helpers (see scripts/_common.py).
+_SCRIPTS_DIR = os.path.dirname(os.path.abspath(__file__))
+if _SCRIPTS_DIR not in sys.path:
+    sys.path.insert(0, _SCRIPTS_DIR)
+
+from _common import atomic_write_json  # noqa: E402
+from _common import find_world_root as _common_find_world_root  # noqa: E402
+
 
 # ---------------------------------------------------------------------------
 # 1. Log Parser
@@ -27,7 +35,6 @@ def parse_log(walnut):
         return {
             "context": "",
             "phase": "unknown",
-            "next": None,
             "bundle": None,
             "squirrel": None,
         }
@@ -39,7 +46,6 @@ def parse_log(walnut):
         return {
             "context": "",
             "phase": "unknown",
-            "next": None,
             "bundle": None,
             "squirrel": None,
         }
@@ -50,6 +56,17 @@ def parse_log(walnut):
     if fm_match:
         body = content[fm_match.end():]
 
+    # Strip single-line HTML comments (e.g. ``<!-- entry-hash: abc12345 -->``)
+    # whose only content is the comment. Multi-line comments are not expected
+    # in the log-entry layout and are deliberately out of scope. Anchored at
+    # ``^\s*<!--.*?-->\s*$`` per line so a legitimate inline ``<!-- x -->``
+    # appearing mid-prose is preserved.
+    body = re.sub(
+        r"(?m)^\s*<!--.*?-->\s*$\n?",
+        "",
+        body,
+    )
+
     # Find the first ## YYYY-MM-DD heading
     entry_pattern = re.compile(
         r"^## (\d{4}-\d{2}-\d{2}[^\n]*)", re.MULTILINE
@@ -59,7 +76,6 @@ def parse_log(walnut):
         return {
             "context": "",
             "phase": "unknown",
-            "next": None,
             "bundle": None,
             "squirrel": None,
         }
@@ -126,50 +142,6 @@ def parse_log(walnut):
                 phase = pname
                 break
 
-    # Extract next action
-    next_info = None
-
-    # Look for ### Next section
-    next_section_match = re.search(
-        r"### Next\s*\n(.*?)(?=\n### |\n## |\Z)", entry_text, re.DOTALL
-    )
-    if next_section_match:
-        next_text = next_section_match.group(1).strip()
-        # Remove signed: lines and empty lines at the end
-        next_lines = [
-            ln for ln in next_text.split("\n")
-            if not re.match(r"^\s*signed:\s", ln, re.IGNORECASE)
-        ]
-        next_text = "\n".join(next_lines).strip()
-
-        # Split into action (first sentence/line) and why (rest) if multi-line
-        sentences = re.split(r"(?<=\.)\s+", next_text, maxsplit=1)
-        action = sentences[0].strip() if sentences else next_text
-        why = sentences[1].strip() if len(sentences) > 1 else None
-
-        next_info = {"action": action, "bundle": None, "why": why}
-
-        # Look for bundle references -- require explicit "bundle:" or "bundle :" prefix
-        # Avoid matching words like "progress" that happen to follow "bundle"
-        bundle_ref = re.search(
-            r"(?:^|\s)bundle:\s*([a-z0-9_-]+(?:/[a-z0-9_-]+)*)",
-            next_text, re.IGNORECASE
-        )
-        if bundle_ref:
-            next_info["bundle"] = bundle_ref.group(1)
-    else:
-        # Look for a line containing next:
-        next_line_match = re.search(
-            r"(?:^|\n)\s*(?:\*\*)?next(?:\*\*)?[:\s]+(.+)",
-            entry_text, re.IGNORECASE
-        )
-        if next_line_match:
-            next_info = {
-                "action": next_line_match.group(1).strip(),
-                "bundle": None,
-                "why": None,
-            }
-
     # Extract bundle reference from "What Was Built" or bundle: mentions
     bundle = None
     bundle_match = re.search(r"bundle:\s*(\S+)", entry_text, re.IGNORECASE)
@@ -193,7 +165,6 @@ def parse_log(walnut):
     return {
         "context": context_text,
         "phase": phase,
-        "next": next_info,
         "bundle": bundle,
         "squirrel": squirrel,
     }
@@ -366,17 +337,20 @@ def read_unscoped_tasks(walnut):
 # ---------------------------------------------------------------------------
 
 def find_world_root(walnut):
-    """Walk UP from walnut to find directory containing .alive/."""
-    current = os.path.abspath(walnut)
-    while True:
-        alive_dir = os.path.join(current, ".alive")
-        if os.path.isdir(alive_dir):
-            return current
-        parent = os.path.dirname(current)
-        if parent == current:
-            break
-        current = parent
-    return None
+    """Locate the ALIVE world root for `walnut`, or return None on miss.
+
+    Delegates to ``_common.find_world_root`` (which ports the bash
+    sibling's full tier order: ``$ALIVE_WORLD_ROOT_OVERRIDE`` ->
+    ``~/.config/alive/world-root`` (with legacy walnut migration) ->
+    bootstrap cwd walk-up via ``is_valid_world_root``). The shared
+    finder raises FileNotFoundError when no tier matches;
+    ``project.py`` callers treat a miss as "no squirrel sessions
+    available", so we translate back to None.
+    """
+    try:
+        return _common_find_world_root(walnut)
+    except FileNotFoundError:
+        return None
 
 
 def read_squirrel_sessions(walnut):
@@ -519,7 +493,7 @@ def scan_nested_walnuts(walnut):
             continue
 
         # Read its now.json if it exists
-        child_info = {"phase": "unknown", "next": None, "updated": None}
+        child_info = {"phase": "unknown", "updated": None}
 
         # Try v3 path first, then v2 path
         for now_path in [
@@ -531,11 +505,6 @@ def scan_nested_walnuts(walnut):
                     with open(now_path, "r", encoding="utf-8") as f:
                         now_data = json.load(f)
                     child_info["phase"] = now_data.get("phase", "unknown")
-                    next_val = now_data.get("next")
-                    if isinstance(next_val, dict):
-                        child_info["next"] = next_val.get("action")
-                    elif isinstance(next_val, str):
-                        child_info["next"] = next_val
                     child_info["updated"] = now_data.get("updated")
                     break
                 except (IOError, json.JSONDecodeError, UnicodeDecodeError):
@@ -557,7 +526,7 @@ def assemble(walnut):
         log_data = parse_log(walnut)
     except Exception:
         log_data = {
-            "context": "", "phase": "unknown", "next": None,
+            "context": "", "phase": "unknown",
             "bundle": None, "squirrel": None,
         }
 
@@ -695,9 +664,6 @@ def assemble(walnut):
     # --- Phase ---
     phase = log_data.get("phase", "unknown")
 
-    # --- Next ---
-    next_field = log_data.get("next")
-
     # --- Timestamp ---
     updated = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
@@ -706,7 +672,6 @@ def assemble(walnut):
         "phase": phase,
         "updated": updated,
         "squirrel": most_recent_squirrel,
-        "next": next_field,
         "bundles": {
             "active": active_tier if active_tier else {},
             "recent": recent_tier if recent_tier else {},
@@ -727,18 +692,9 @@ def assemble(walnut):
 # ---------------------------------------------------------------------------
 
 def write_now_json(walnut, data):
-    """Write now.json atomically to _kernel/now.json."""
-    kernel_dir = os.path.join(walnut, "_kernel")
-    os.makedirs(kernel_dir, exist_ok=True)
-
-    target = os.path.join(kernel_dir, "now.json")
-    tmp = target + ".tmp"
-
-    with open(tmp, "w", encoding="utf-8") as f:
-        json.dump(data, f, indent=2, ensure_ascii=False)
-        f.write("\n")
-
-    os.replace(tmp, target)
+    """Write now.json atomically to _kernel/now.json via _common helper."""
+    target = os.path.join(walnut, "_kernel", "now.json")
+    atomic_write_json(target, data)
     return target
 
 

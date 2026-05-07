@@ -1,0 +1,48 @@
+---
+name: "shielding-review"
+goal: "Lock a shielding stack that clears the 2 sievert per orbit threshold under the mass budget."
+species: "outcome"
+phase: "done"
+status: "done"
+sensitivity: "private"
+version: "0.1"
+due: "2026-03-15"
+created: "2026-01-12"
+session: "a3b9f2c8d1e4567a"
+parent_walnut: "nova-station"
+parent_bundle:
+
+description: "The shielding-review bundle ran the radiation-shielding evaluation across three iterations. Closed clean on 2026-03-02 with the third-iteration stack locked."
+author: "sandbox squirrel"
+tags:
+  - shielding
+  - radiation
+  - testing
+price: free
+license: MIT
+
+installs:
+  skills: []
+  hooks: []
+  templates: []
+
+people:
+  - ryn-okata
+shared: []
+
+tasks_total: 4
+tasks_done: 4
+tasks_created: "2026-01-12"
+
+context_routes: []
+
+discovered:
+  status: none
+  last_mined:
+  processed: []
+  unprocessed: []
+
+observations: []
+
+creates: []
+---

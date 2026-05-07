@@ -1,0 +1,166 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://alive-context-system.dev/schemas/demo/spine/0.1",
+  "title": "alive-demo Stage 0 spine",
+  "description": "Schema descriptor for the spine.json document Stage 0 of the /alive:demo generation pipeline emits. Stage 0 enforces this contract via a stdlib-only hand-rolled validator in `plugins/alive/skills/demo/stages/stage0.py:preflight_spine` (see the epic spec § 'Why stdlib-only validation' — the plan's original `Draft202012Validator` reference is replaced because vendoring jsonschema would pull a Rust extension dep that violates the plugin's stdlib-only posture). This file is a machine-readable descriptor for downstream consumers (test harnesses, future tooling) and is kept in sync with the human-readable spec at spine.schema.md and the runtime checks in preflight_spine. Constraints that JSON Schema Draft 2020-12 cannot natively express (slug uniqueness across or within rosters) are encoded as `x-alive-uniqueSlugAcross` / `x-alive-uniqueSlugPerParent` extension annotations on the relevant array properties; downstream tooling that wants full parity with Stage 0 must apply both the standard schema rules AND those annotations. Coherence invariants (cross-references, walnut-must-have-bundle, anchor-date-in-timespan) are deferred to plugins/alive/skills/demo/validate.py (fn-2-2zz.10) and are NOT encoded here.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "persona",
+    "walnut_roster",
+    "people_roster",
+    "bundle_distribution",
+    "time_span",
+    "session_cadence",
+    "anchor_moments"
+  ],
+  "properties": {
+    "schema_version": {
+      "type": "string",
+      "const": "0.1"
+    },
+    "persona": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "first_name", "label", "summary", "tone_hints"],
+      "properties": {
+        "name": {"type": "string", "minLength": 1},
+        "first_name": {"type": "string", "minLength": 1},
+        "label": {"$ref": "#/$defs/slug"},
+        "summary": {"type": "string", "minLength": 1},
+        "tone_hints": {
+          "type": "array",
+          "maxItems": 3,
+          "items": {"type": "string", "minLength": 1}
+        }
+      }
+    },
+    "walnut_roster": {
+      "type": "array",
+      "items": {"$ref": "#/$defs/walnut"},
+      "x-alive-uniqueSlugAcross": "slug",
+      "$comment": "Stage 0 preflight rejects duplicate slug values across the walnut_roster (see preflight_spine in plugins/alive/skills/demo/stages/stage0.py). Standard JSON Schema Draft 2020-12 has no native uniqueness-on-a-keyed-field constraint, so this is encoded as the x-alive-uniqueSlugAcross extension annotation."
+    },
+    "people_roster": {
+      "type": "array",
+      "items": {"$ref": "#/$defs/person"},
+      "x-alive-uniqueSlugAcross": "slug",
+      "$comment": "Stage 0 preflight rejects duplicate slug values across the people_roster."
+    },
+    "bundle_distribution": {
+      "type": "array",
+      "items": {"$ref": "#/$defs/bundle"},
+      "x-alive-uniqueSlugPerParent": {"slugField": "slug", "parentField": "walnut_slug"},
+      "$comment": "Stage 0 preflight rejects duplicate (walnut_slug, slug) pairs in bundle_distribution; the same bundle slug under different walnut_slugs is allowed."
+    },
+    "time_span": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["start", "end"],
+      "properties": {
+        "start": {"$ref": "#/$defs/iso_date"},
+        "end": {"$ref": "#/$defs/iso_date"}
+      },
+      "x-alive-rangeOrder": {"start": "start", "end": "end"},
+      "$comment": "Stage 0 preflight enforces time_span.start <= time_span.end (lexicographic comparison on the strict YYYY-MM-DD string is equivalent to date comparison). JSON Schema Draft 2020-12 cannot natively express cross-property comparisons; encoded as the x-alive-rangeOrder extension annotation."
+    },
+    "session_cadence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["pattern", "sessions_per_week"],
+      "properties": {
+        "pattern": {"enum": ["daily", "weekly", "sporadic"]},
+        "sessions_per_week": {
+          "type": "number",
+          "exclusiveMinimum": 0,
+          "maximum": 14
+        }
+      }
+    },
+    "anchor_moments": {
+      "type": "array",
+      "items": {"$ref": "#/$defs/anchor"},
+      "x-alive-uniqueSlugAcross": "slug",
+      "$comment": "Stage 0 preflight rejects duplicate slug values across anchor_moments."
+    }
+  },
+  "$defs": {
+    "slug": {
+      "type": "string",
+      "pattern": "^[a-z0-9]+(-[a-z0-9]+)*$"
+    },
+    "iso_date": {
+      "type": "string",
+      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}$",
+      "format": "date"
+    },
+    "walnut": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["slug", "name", "type", "domain_dir", "summary", "status"],
+      "properties": {
+        "slug": {"$ref": "#/$defs/slug"},
+        "name": {"type": "string", "minLength": 1},
+        "type": {"enum": ["venture", "experiment", "life-area", "minimal-life"]},
+        "domain_dir": {"enum": ["01_Archive", "02_Life", "03_Inbox", "04_Ventures", "05_Experiments"]},
+        "summary": {"type": "string", "minLength": 1},
+        "status": {"enum": ["active", "working", "waiting", "archive"]}
+      }
+    },
+    "person": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["slug", "name", "relationship"],
+      "properties": {
+        "slug": {"$ref": "#/$defs/slug"},
+        "name": {"type": "string", "minLength": 1},
+        "relationship": {"type": "string", "minLength": 1},
+        "relationships": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["from", "to", "kind"],
+            "properties": {
+              "from": {"$ref": "#/$defs/slug"},
+              "to": {"$ref": "#/$defs/slug"},
+              "kind": {"type": "string", "minLength": 1}
+            }
+          }
+        }
+      }
+    },
+    "bundle": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["slug", "walnut_slug", "name", "summary", "status"],
+      "properties": {
+        "slug": {"$ref": "#/$defs/slug"},
+        "walnut_slug": {"$ref": "#/$defs/slug"},
+        "name": {"type": "string", "minLength": 1},
+        "summary": {"type": "string", "minLength": 1},
+        "status": {"enum": ["active", "working", "waiting", "archive"]}
+      }
+    },
+    "anchor": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["slug", "name", "date", "summary", "walnut_slugs", "people_slugs"],
+      "properties": {
+        "slug": {"$ref": "#/$defs/slug"},
+        "name": {"type": "string", "minLength": 1},
+        "date": {"$ref": "#/$defs/iso_date"},
+        "summary": {"type": "string", "minLength": 1},
+        "walnut_slugs": {
+          "type": "array",
+          "items": {"$ref": "#/$defs/slug"}
+        },
+        "people_slugs": {
+          "type": "array",
+          "items": {"$ref": "#/$defs/slug"}
+        }
+      }
+    }
+  }
+}

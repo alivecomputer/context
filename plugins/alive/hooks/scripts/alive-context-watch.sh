@@ -8,7 +8,16 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 source "$SCRIPT_DIR/alive-common.sh"
 
 read_hook_input
-find_world || exit 0
+
+# fn-15-la5.6: bridge fan-out -- helper is the SOLE emitter on the
+# no-world-found path. find_world_or_warn emits hook-shaped JSON on
+# stdout (or {} when the SessionStart sentinel is already taken /
+# event isn't message-bearing) and returns 1 in-bash so we exit 0
+# cleanly without printing JSON ourselves.
+# // TODO(world-resolution-contract-v2): swap to find_world_or_die in cutover release
+if ! find_world_or_warn "${HOOK_EVENT:-UserPromptSubmit}"; then
+  exit 0
+fi
 
 SESSION_ID="${HOOK_SESSION_ID}"
 [ -z "$SESSION_ID" ] && exit 0

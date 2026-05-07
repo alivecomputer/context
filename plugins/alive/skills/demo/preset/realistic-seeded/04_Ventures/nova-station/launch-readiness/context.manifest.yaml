@@ -1,0 +1,49 @@
+---
+name: "launch-readiness"
+goal: "Drive every line of the launch-readiness checklist to green before the May 2026 crewed window."
+species: "outcome"
+phase: "prototype"
+status: "prototype"
+sensitivity: "private"
+version: "0.1"
+due: "2026-05-01"
+created: "2026-01-12"
+session: "a3b9f2c8d1e4567a"
+parent_walnut: "nova-station"
+parent_bundle:
+
+description: "The launch-readiness bundle tracks the integration milestones with the LaunchCo launch-logistics partnership and the residual hardware risks from the shielding-review handoff. 14 of 17 checklist items are green as of 2026-04-22."
+author: "sandbox squirrel"
+tags:
+  - launch
+  - integration
+  - readiness
+price: free
+license: MIT
+
+installs:
+  skills: []
+  hooks: []
+  templates: []
+
+people:
+  - ryn-okata
+  - jax-stellara
+shared: []
+
+tasks_total: 17
+tasks_done: 14
+tasks_created: "2026-01-12"
+
+context_routes: []
+
+discovered:
+  status: none
+  last_mined:
+  processed: []
+  unprocessed: []
+
+observations: []
+
+creates: []
+---

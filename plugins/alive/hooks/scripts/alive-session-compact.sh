@@ -9,7 +9,16 @@ source "$SCRIPT_DIR/alive-common.sh"
 
 read_hook_input
 read_session_fields
-find_world || { echo "No Alive world found."; exit 0; }
+
+# fn-15-la5.6: bridge fan-out -- helper is the SOLE emitter on the
+# no-world-found path. We previously echoed "No Alive world found." to
+# stdout, which produced TWO things on stdout (that line plus an
+# implicit empty body) and was not valid hook JSON. Helper emits a
+# single, valid JSON object instead.
+# // TODO(world-resolution-contract-v2): swap to find_world_or_die in cutover release
+if ! find_world_or_warn "${HOOK_EVENT:-SessionStart}"; then
+  exit 0
+fi
 
 SESSION_ID="${HOOK_SESSION_ID}"
 

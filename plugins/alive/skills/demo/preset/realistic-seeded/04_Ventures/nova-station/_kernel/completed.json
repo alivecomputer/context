@@ -1,0 +1,53 @@
+{
+  "completed": [
+    {
+      "id": "ns-c001",
+      "title": "Sign launch-logistics handoff letter",
+      "status": "done",
+      "completed": "2026-04-22",
+      "completed_by": "sandbox squirrel"
+    },
+    {
+      "id": "ns-c002",
+      "title": "Confirm crewed window with Ryn",
+      "status": "done",
+      "completed": "2026-04-22",
+      "completed_by": "sandbox squirrel"
+    },
+    {
+      "id": "ns-c003",
+      "title": "File the change order",
+      "status": "done",
+      "completed": "2026-03-19",
+      "completed_by": "sandbox squirrel"
+    },
+    {
+      "id": "ns-c004",
+      "title": "Close shielding-review primary checklist",
+      "status": "done",
+      "completed": "2026-03-02",
+      "completed_by": "sandbox squirrel"
+    },
+    {
+      "id": "ns-c005",
+      "title": "Schedule shielding-review pass with Ryn",
+      "status": "done",
+      "completed": "2026-02-20",
+      "completed_by": "sandbox squirrel"
+    },
+    {
+      "id": "ns-c006",
+      "title": "Confirm ExampleCorp delivery dates with Jax",
+      "status": "done",
+      "completed": "2026-03-19",
+      "completed_by": "sandbox squirrel"
+    },
+    {
+      "id": "ns-c007",
+      "title": "Lock the May 2026 crewed window with the LaunchCo partner",
+      "status": "done",
+      "completed": "2026-02-25",
+      "completed_by": "sandbox squirrel"
+    }
+  ]
+}

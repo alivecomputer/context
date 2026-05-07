@@ -14,17 +14,17 @@ NOT a database dump. NOT a flat list. A living view of their world, grouped by w
 
 ## Load Sequence
 
-1. **Read the injected `<WORLD_INDEX>`** — it's already in your session context from the SessionStart hook. Contains every walnut's type, goal, phase, rhythm, updated, next, people, links, tags, bundles, and parent relationships. Zero file reads needed. If `<WORLD_INDEX>` is not in context, fall back to reading `.alive/_index.yaml` directly.
+1. **Read the injected `<WORLD_INDEX>`** — it's already in your session context from the SessionStart hook. Contains every walnut's type, goal, phase, rhythm, updated, people, links, tags, bundles, and parent relationships. Zero file reads needed. If `<WORLD_INDEX>` is not in context, fall back to reading `.alive/_index.yaml` directly.
 2. **If no index exists at all** — generate it first (`python3 "$ALIVE_PLUGIN_ROOT/scripts/generate-index.py" "$WORLD_ROOT"`), then read the output. Fall back to manual scanning only on first-time setup before the index infrastructure exists.
 3. **Freshness check** — read the `generated:` timestamp from the index. Display it in the dashboard header. If older than 10 minutes, show a warning. If older than 1 hour, suggest regeneration. This makes index staleness visible instead of invisible.
 4. Build the tree from the index — parent/child relationships from `parent:` field
 5. **Lightweight fresh checks** — one Bash call each, no subagents, no Explore agents:
    - **Unsaved sessions with stash:** already in the index as `unsaved_with_stash:`. If non-zero, surface in the Attention section. No bash loop needed.
-   - **Unrouted inputs:** resolve the world root first (it's NOT reliably set as a shell var — read it from the install config file), then list the absolute path. Never use a relative `ls 03_Inbox/` — it silently fails when the Bash tool's cwd isn't the world root. One-liner:
+   - **Unrouted inputs:** resolve the world root via the doctor JSON surface, then list the absolute path. Never use a relative `ls 03_Inbox/` — it silently fails when the Bash tool's cwd isn't the world root. One-liner:
      ```bash
-     WR=$(cat ~/.config/alive/world-root 2>/dev/null | tr -d '[:space:]'); ls "$WR/03_Inbox/" 2>/dev/null | grep -v '^\.' | grep -v '^Icon'
+     WR=$(alive doctor --check=world-root --json | jq -r '.world_root') && [ -n "$WR" ] && ls "$WR/03_Inbox/" 2>/dev/null | grep -v '^\.' | grep -v '^Icon'
      ```
-     Just the filenames, no deep reads.
+     Doctor's pinned-strategy result is the authoritative resolver — preferred over raw config-file reads, which mangle paths with internal whitespace. Just the filenames, no deep reads.
    - **API context:** only if context sources are listed in the session start injection (already in your context from the hook — do NOT re-read preferences.yaml).
 6. Compute attention items from fresh checks + index staleness signals
 7. **Inbox triage (background)** — if `03_Inbox/` has items, dispatch a background agent to triage them. Don't wait for it — render the dashboard immediately, the triage results arrive while the human reads.
@@ -96,16 +96,16 @@ What needs the human's attention TODAY. Not everything — just what's active an
 │  ──────────────────────────────────────────────
 │
 │   1. my-startup              launching
-│      Next: Record demo video for investor deck
+│      Urgent: 1 · Active: 3
 │      Last: 2 hours ago · 6 sessions this week
 │
 │   2. freelance-agency        legacy
-│      Next: Close out 3 remaining client contracts
+│      Urgent: 3 · Active: 0
 │      Last: 2 days ago
 │      People: Jake Chen, Sarah Mills
 │
 │   3. social-content          building
-│      Next: Review 8 drafted posts in Buffer
+│      Urgent: 0 · Active: 8
 │      ⚠ 4 days past rhythm
 │
 ╰─
@@ -113,7 +113,7 @@ What needs the human's attention TODAY. Not everything — just what's active an
 
 Only show walnuts that are `active` or past their rhythm. Sort by most recently touched. Show:
 - Phase
-- Next action (from `_kernel/now.json`)
+- Urgent + active task counts (from the index's `task_counts` payload, which mirrors `_kernel/now.json` `unscoped_tasks.counts`)
 - Last activity (relative time)
 - People involved (from `_kernel/key.md` — max 2-3 names)
 - Warning if past rhythm

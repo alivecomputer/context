@@ -46,7 +46,7 @@ jobs:
 
       - name: Run Claude PII Review
         id: claude-pii-review
-        uses: anthropics/claude-code-action@v1
+        uses: anthropics/claude-code-action@v1.0.112  # pinned to last-known-good SHA 2cc1ac13 (Claude Code 2.1.128); v1.0.113 broke install on hosted runners
         env:
           # Optional watchlist. If the PII_WATCHLIST_JSON secret is unset, we
           # pass an empty-structured object so the prompt can parse it cleanly

@@ -1,0 +1,62 @@
+{
+  "schema_version": "0.1",
+  "preset_name": "realistic-seeded",
+  "description": "Lean Nova Station preset world for sandbox skill testing.",
+  "label": "nova-station-sandbox",
+  "persona_first_name": "sandbox",
+  "persona_full_name": "sandbox squirrel",
+  "walnuts": [
+    {
+      "slug": "nova-station",
+      "domain_dir": "04_Ventures",
+      "type": "venture"
+    },
+    {
+      "slug": "ryn-okata",
+      "domain_dir": "02_Life/people",
+      "type": "person"
+    },
+    {
+      "slug": "jax-stellara",
+      "domain_dir": "02_Life/people",
+      "type": "person"
+    }
+  ],
+  "bundles": [
+    {
+      "walnut": "nova-station",
+      "slug": "shielding-review"
+    },
+    {
+      "walnut": "nova-station",
+      "slug": "launch-readiness"
+    }
+  ],
+  "sessions": [
+    {
+      "sid": "a3b9f2c8d1e4567a",
+      "date": "2026-02-14",
+      "walnut": "nova-station"
+    },
+    {
+      "sid": "b2c8d4e9f1a35678",
+      "date": "2026-03-02",
+      "walnut": "nova-station"
+    },
+    {
+      "sid": "c4d9e1f3a2b56789",
+      "date": "2026-03-19",
+      "walnut": "nova-station"
+    },
+    {
+      "sid": "d5e7f0a9b1c34567",
+      "date": "2026-04-05",
+      "walnut": "nova-station"
+    },
+    {
+      "sid": "e6f8a2b4c3d56789",
+      "date": "2026-04-22",
+      "walnut": "nova-station"
+    }
+  ]
+}

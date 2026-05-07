@@ -1,23 +1,31 @@
 name: promote labeled PR to public
 
-# Fires when a staging PR is merged AND carries the `promote` label.
-# Cherry-picks that PR's merge commit onto a fresh branch on public
-# alivecontext/alive, then opens a PR for human review and merge.
+# Fires when a release PR (title starts `release:` OR carries the `release` label)
+# on alive-staging is merged AND carries the `promote` action label AND has a maintainer's
+# `stage:promotion-ready` gate AND is not `stage:private-forever` AND is not `stage:deferred`.
 #
-# This is distinct from a wholesale staging->public mirror. Staging
-# main accumulates work-in-progress (P2P, MCP, etc.) that must stay
-# staging-only until each individual PR is explicitly opted-in for
-# release via the `promote` label on the staging PR. Applying the
-# label is the promotion signal; merge to staging main is not.
+# The workflow also refuses any source PR (referenced via `(#N)` in the CHANGELOG block)
+# that carries `stage:private-forever` or `stage:deferred`. `stage:deferred` covers
+# content scoped to a later release line (today: alive-mcp/, P2P scripts) -- it lives
+# on staging main but should not reach public on the current release line.
 #
-# Idempotency: the workflow creates a branch named `promote/staging-pr-<N>`
-# on public. If a branch with that name already exists (either as an
-# open promotion PR or a historical one), the workflow exits cleanly.
-# To re-promote a PR, delete or rename the existing branch first.
+# Behaviour: read the curated CHANGELOG block under the new versioned heading,
+# parse out the source staging PR numbers from `(#N)` references, fetch each
+# source PR's merge SHA, sort chronologically, and cherry-pick the batch onto
+# a fresh `promote/v3.X` branch on alivecontext/alive (public). The release
+# PR's own merge commit (version bumps) is cherry-picked last. CHANGELOG.md
+# is excluded from every cherry-pick onto public -- per project policy, the curated
+# changelog lives on staging only, and the public PR body carries the
+# user-facing release notes.
+#
+# On any cherry-pick conflict the whole batch aborts (no half-shipped state).
+# A comment is posted on the staging release PR with the failed SHA.
+#
+# Idempotency: branch named `promote/v<VERSION>` on public. If it already
+# exists, the workflow exits cleanly. To re-promote, delete the branch first.
 #
 # Required secret: PROMOTE_TOKEN (fine-grained PAT, scoped to
-# alivecontext/alive, with Contents + Pull requests + Workflows
-# read+write). Provisioned on alive-staging.
+# alivecontext/alive, with Contents + Pull requests + Workflows read+write).
 
 on:
   pull_request:
@@ -25,29 +33,39 @@ on:
   workflow_dispatch:
     inputs:
       pr_number:
-        description: 'Staging PR number to promote'
+        description: 'Staging release PR number to promote'
         required: true
         type: string
 
 permissions:
-  contents: read
-  pull-requests: read
+  contents: write
+  pull-requests: write
 
 jobs:
   promote:
     runs-on: ubuntu-latest
-    # Fires from three paths:
-    # 1. workflow_dispatch with an explicit pr_number input
-    # 2. pull_request:closed event where the PR merged AND carries the promote label
-    #    (covers the "label first, then merge" order)
-    # 3. pull_request:labeled event where the label is `promote` AND the PR is already merged
-    #    (covers the "merge first, then add label" order)
+    # Hard gates on the release PR itself:
+    #   merged == true
+    #   has `promote` label
+    #   has `stage:promotion-ready` (maintainer gate)
+    #   does NOT have `stage:private-forever`
+    #   does NOT have `stage:deferred`
+    #   is a release PR -- title prefix `release:` OR `release` label
+    # Hard gates on each source PR (enforced in `Resolve and chronologically order` step):
+    #   does NOT have `stage:private-forever`
+    #   does NOT have `stage:deferred`
     if: |
-      github.event_name == 'workflow_dispatch' ||
-      (github.event_name == 'pull_request' && github.event.action == 'closed' && github.event.pull_request.merged == true && contains(github.event.pull_request.labels.*.name, 'promote')) ||
-      (github.event_name == 'pull_request' && github.event.action == 'labeled' && github.event.label.name == 'promote' && github.event.pull_request.merged == true)
+      github.event_name == 'workflow_dispatch' || (
+        github.event_name == 'pull_request' &&
+        github.event.pull_request.merged == true &&
+        contains(github.event.pull_request.labels.*.name, 'promote') &&
+        contains(github.event.pull_request.labels.*.name, 'stage:promotion-ready') &&
+        !contains(github.event.pull_request.labels.*.name, 'stage:private-forever') &&
+        !contains(github.event.pull_request.labels.*.name, 'stage:deferred') &&
+        (startsWith(github.event.pull_request.title, 'release:') || contains(github.event.pull_request.labels.*.name, 'release'))
+      )
     steps:
-      - name: Resolve source PR metadata
+      - name: Resolve release PR metadata
         id: resolve
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -58,24 +76,56 @@ jobs:
             PR_NUMBER="${{ github.event.pull_request.number }}"
           fi
 
-          META=$(gh pr view "$PR_NUMBER" --repo alivecontext/alive-staging --json mergeCommit,title,url,body)
+          META=$(gh pr view "$PR_NUMBER" --repo alivecontext/alive-staging \
+            --json mergeCommit,title,url,body,labels,state)
           MERGE_SHA=$(echo "$META" | jq -r '.mergeCommit.oid // empty')
           PR_TITLE=$(echo "$META" | jq -r '.title')
           PR_URL=$(echo "$META" | jq -r '.url')
+          PR_STATE=$(echo "$META" | jq -r '.state')
 
-          if [ -z "$MERGE_SHA" ]; then
+          if [ -z "$MERGE_SHA" ] || [ "$PR_STATE" != "MERGED" ]; then
             echo "::error::PR #$PR_NUMBER is not merged; cannot promote."
             exit 1
           fi
 
-          # Write staging body to a file for the Open PR step to read.
-          # Passing via GITHUB_OUTPUT breaks on certain multi-line markdown edge cases;
-          # a file handoff is simpler and handles any body content verbatim.
+          # Validate release PR shape on workflow_dispatch path (the `if:`
+          # gate above doesn't run for dispatch).
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            HAS_RELEASE_LABEL=$(echo "$META" | jq -r '.labels[].name' | grep -Fxq 'release' && echo yes || echo no)
+            case "$PR_TITLE" in release:*) IS_RELEASE_TITLE=yes ;; *) IS_RELEASE_TITLE=no ;; esac
+            if [ "$HAS_RELEASE_LABEL" != "yes" ] && [ "$IS_RELEASE_TITLE" != "yes" ]; then
+              echo "::error::PR #$PR_NUMBER is not a release PR (need 'release:' title prefix or 'release' label)."
+              exit 1
+            fi
+            for required in promote stage:promotion-ready; do
+              if ! echo "$META" | jq -r '.labels[].name' | grep -Fxq "$required"; then
+                echo "::error::PR #$PR_NUMBER missing required label: $required"
+                exit 1
+              fi
+            done
+            for blocking in stage:private-forever stage:deferred; do
+              if echo "$META" | jq -r '.labels[].name' | grep -Fxq "$blocking"; then
+                echo "::error::PR #$PR_NUMBER carries $blocking; refusing to promote."
+                exit 1
+              fi
+            done
+          fi
+
+          # Extract version from title: "release: v3.2" or "release: v3.2.1" -> "3.2" / "3.2.1"
+          VERSION=$(printf '%s' "$PR_TITLE" \
+            | sed -nE 's|^release:[[:space:]]*v?([0-9]+\.[0-9]+(\.[0-9]+)?(-[A-Za-z0-9.]+)?).*$|\1|p')
+          if [ -z "$VERSION" ]; then
+            echo "::error::Could not parse version from release PR title: $PR_TITLE"
+            echo "Expected: 'release: v3.X' or 'release: v3.X.Y'"
+            exit 1
+          fi
+
           echo "$META" | jq -r '.body // ""' > "${RUNNER_TEMP}/staging-body.md"
 
           echo "pr_number=$PR_NUMBER"  >> "$GITHUB_OUTPUT"
           echo "merge_sha=$MERGE_SHA"  >> "$GITHUB_OUTPUT"
           echo "pr_url=$PR_URL"        >> "$GITHUB_OUTPUT"
+          echo "version=$VERSION"      >> "$GITHUB_OUTPUT"
           echo "body_file=${RUNNER_TEMP}/staging-body.md" >> "$GITHUB_OUTPUT"
           {
             echo "pr_title<<PR_TITLE_EOF"
@@ -93,6 +143,104 @@ jobs:
           git config user.name  "alive-promote"
           git config user.email "alive-promote@users.noreply.github.com"
 
+      - name: Extract source PR scope and curated changelog block
+        id: scope
+        run: |
+          VERSION="${{ steps.resolve.outputs.version }}"
+          # Find the new versioned block in CHANGELOG.md and extract:
+          #   1. Source PR numbers from `(#N)` references in the block
+          #   2. The block content for use as the public PR body
+          #
+          # The block is delimited by `## [<version>]` (or `## v<version>`)
+          # at the top and the next `## ` heading (or EOF) at the bottom.
+
+          if [ ! -f CHANGELOG.md ]; then
+            echo "::error::CHANGELOG.md not found on staging main"
+            exit 1
+          fi
+
+          BLOCK_FILE="${RUNNER_TEMP}/changelog-block.md"
+          awk -v ver="$VERSION" '
+            BEGIN { in_block=0 }
+            # Match `## [3.2] - 2026-04-28` or `## v3.2 - 2026-04-28` etc.
+            /^## / {
+              if (in_block) exit
+              if (match($0, /\[?v?[0-9]+\.[0-9]+(\.[0-9]+)?(-[A-Za-z0-9.]+)?\]?/)) {
+                v = substr($0, RSTART, RLENGTH)
+                gsub(/[\[\]v]/, "", v)
+                if (v == ver) { in_block=1; next }
+              }
+            }
+            in_block { print }
+          ' CHANGELOG.md > "$BLOCK_FILE"
+
+          if [ ! -s "$BLOCK_FILE" ]; then
+            echo "::error::Could not locate '## [$VERSION]' block in CHANGELOG.md"
+            exit 1
+          fi
+
+          # Extract unique PR numbers in the order they appear.
+          grep -oE '\(#[0-9]+\)' "$BLOCK_FILE" \
+            | tr -d '(#)' \
+            | awk '!seen[$0]++' > "${RUNNER_TEMP}/source-prs.txt"
+
+          COUNT=$(wc -l < "${RUNNER_TEMP}/source-prs.txt" | tr -d ' ')
+          echo "Found $COUNT source PR reference(s) in CHANGELOG block for v$VERSION"
+          cat "${RUNNER_TEMP}/source-prs.txt"
+
+          if [ "$COUNT" = "0" ]; then
+            echo "::warning::No source PR references (#N) found in v$VERSION block. Release will only carry the release PR's own commit (version bumps)."
+          fi
+
+          echo "block_file=$BLOCK_FILE"        >> "$GITHUB_OUTPUT"
+          echo "source_prs=${RUNNER_TEMP}/source-prs.txt" >> "$GITHUB_OUTPUT"
+          echo "source_count=$COUNT"           >> "$GITHUB_OUTPUT"
+
+      - name: Resolve and chronologically order source PR merge commits
+        id: order
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          SOURCE_PRS="${{ steps.scope.outputs.source_prs }}"
+          ORDERED="${RUNNER_TEMP}/ordered-shas.tsv"
+          : > "$ORDERED"
+
+          while IFS= read -r N; do
+            [ -z "$N" ] && continue
+            META=$(gh pr view "$N" --repo alivecontext/alive-staging \
+              --json mergeCommit,mergedAt,title,url,state,labels)
+            STATE=$(echo "$META" | jq -r '.state')
+            if [ "$STATE" != "MERGED" ]; then
+              echo "::error::Source PR #$N is not merged (state=$STATE); cannot promote."
+              exit 1
+            fi
+            # Refuse the batch if any source PR carries a non-shipping label.
+            #   stage:deferred         -> ships in a later release line; do not include here
+            #   stage:private-forever  -> never ships
+            # Either being in the source set means the release PR's CHANGELOG block
+            # references content that should not reach public via this batch.
+            for blocking in stage:deferred stage:private-forever; do
+              if echo "$META" | jq -r '.labels[].name' | grep -Fxq "$blocking"; then
+                echo "::error::Source PR #$N carries $blocking; refusing the release batch."
+                echo "::error::Either drop the (#$N) reference from the CHANGELOG block,"
+                echo "::error::or split the publishable portion of #$N into a new PR and reference that instead."
+                exit 1
+              fi
+            done
+            SHA=$(echo "$META" | jq -r '.mergeCommit.oid')
+            TS=$(echo "$META" | jq -r '.mergedAt')
+            TITLE=$(echo "$META" | jq -r '.title')
+            URL=$(echo "$META" | jq -r '.url')
+            printf '%s\t%s\t%s\t%s\t%s\n' "$TS" "$N" "$SHA" "$URL" "$TITLE" >> "$ORDERED"
+          done < "$SOURCE_PRS"
+
+          # Stable sort by mergedAt ascending.
+          sort -k1,1 "$ORDERED" -o "$ORDERED"
+          echo "Cherry-pick order:"
+          cat "$ORDERED" | awk -F'\t' '{ printf "  %s  #%s  %s\n", $1, $2, $5 }'
+
+          echo "ordered=$ORDERED" >> "$GITHUB_OUTPUT"
+
       - name: Add public remote + fetch
         env:
           GH_TOKEN: ${{ secrets.PROMOTE_TOKEN }}
@@ -103,61 +251,219 @@ jobs:
       - name: Check idempotency
         id: check
         run: |
-          BRANCH="promote/staging-pr-${{ steps.resolve.outputs.pr_number }}"
+          BRANCH="promote/v${{ steps.resolve.outputs.version }}"
           if git ls-remote --exit-code --heads public "$BRANCH" >/dev/null 2>&1; then
-            echo "::notice::Branch $BRANCH already exists on public; PR #${{ steps.resolve.outputs.pr_number }} already promoted or in-flight. Exiting."
+            echo "::notice::Branch $BRANCH already exists on public; v${{ steps.resolve.outputs.version }} already promoted or in-flight. Exiting."
             echo "skip=true" >> "$GITHUB_OUTPUT"
             exit 0
           fi
           echo "skip=false" >> "$GITHUB_OUTPUT"
           echo "branch=$BRANCH" >> "$GITHUB_OUTPUT"
 
-      - name: Cherry-pick merge commit onto fresh branch
+      - name: Multi-cherry-pick onto fresh public branch
         if: steps.check.outputs.skip != 'true'
+        id: cherrypick
+        env:
+          GH_TOKEN_STAGING: ${{ secrets.GITHUB_TOKEN }}
+          STAGING_PR: ${{ steps.resolve.outputs.pr_number }}
         run: |
           BRANCH="${{ steps.check.outputs.branch }}"
-          MERGE_SHA="${{ steps.resolve.outputs.merge_sha }}"
+          ORDERED="${{ steps.order.outputs.ordered }}"
+          RELEASE_SHA="${{ steps.resolve.outputs.merge_sha }}"
 
           git checkout -b "$BRANCH" public/main
-          if ! git cherry-pick -m 1 "$MERGE_SHA"; then
-            echo "::error::Cherry-pick of $MERGE_SHA produced conflicts against public/main. Resolve manually."
+
+          # Paths excluded from every cherry-pick onto public. Documented in
+          # CONTRIBUTING-staging.md under "Path-prefix fold exclusion". Trailing
+          # slash on a directory pattern means "everything under that directory";
+          # `git ls-files -- "<dir>/"` and the staged-file check below handle
+          # both file and directory patterns.
+          STAGING_ONLY_PATTERNS=(
+            "CHANGELOG.md"
+            "plugins/alive/tests/"
+          )
+
+          # Drop staged staging-only paths from the picked index/worktree.
+          # For each pattern: enumerate matching tracked files in the working
+          # index (post-pick), restore each to HEAD's version (or remove if
+          # newly added by the pick), then unstage.
+          drop_staging_only_paths() {
+            for pattern in "${STAGING_ONLY_PATTERNS[@]}"; do
+              git ls-files -- "$pattern" 2>/dev/null | while IFS= read -r f; do
+                [ -z "$f" ] && continue
+                if git cat-file -e "HEAD:$f" 2>/dev/null; then
+                  git checkout HEAD -- "$f" 2>/dev/null || true
+                else
+                  rm -f "$f"
+                fi
+                git reset HEAD -- "$f" 2>/dev/null || true
+              done
+            done
+          }
+
+          # Cherry-pick each source PR's merge commit, excluding staging-only
+          # paths. Strategy: -n (no commit) so we can drop excluded paths from
+          # the index before committing; reuse the original commit message via
+          # `git commit -C`.
+          while IFS=$'\t' read -r TS N SHA URL TITLE; do
+            [ -z "$SHA" ] && continue
+            echo "::group::Cherry-pick staging #$N $SHA"
+            if ! git cherry-pick -n -m 1 "$SHA"; then
+              # Try to record what conflicted before aborting.
+              CONFLICTS=$(git diff --name-only --diff-filter=U | tr '\n' ' ')
+              git cherry-pick --abort 2>/dev/null || true
+              echo "::error::Cherry-pick of staging #$N ($SHA) conflicted on: $CONFLICTS"
+              echo "failed_pr=$N"   >> "$GITHUB_OUTPUT"
+              echo "failed_sha=$SHA" >> "$GITHUB_OUTPUT"
+              echo "failed_files=$CONFLICTS" >> "$GITHUB_OUTPUT"
+              exit 1
+            fi
+            drop_staging_only_paths
+            git commit -C "$SHA" --allow-empty
+            echo "::endgroup::"
+          done < "$ORDERED"
+
+          # Cherry-pick the release PR itself (version bumps), excluding
+          # staging-only paths.
+          echo "::group::Cherry-pick release PR merge $RELEASE_SHA (version bumps)"
+          if ! git cherry-pick -n -m 1 "$RELEASE_SHA"; then
+            CONFLICTS=$(git diff --name-only --diff-filter=U | tr '\n' ' ')
+            git cherry-pick --abort 2>/dev/null || true
+            echo "::error::Cherry-pick of release PR ($RELEASE_SHA) conflicted on: $CONFLICTS"
+            echo "failed_pr=$STAGING_PR"     >> "$GITHUB_OUTPUT"
+            echo "failed_sha=$RELEASE_SHA"   >> "$GITHUB_OUTPUT"
+            echo "failed_files=$CONFLICTS"   >> "$GITHUB_OUTPUT"
             exit 1
           fi
+          drop_staging_only_paths
+          # Allow empty in case the release PR's only diff was excluded paths.
+          git commit -C "$RELEASE_SHA" --allow-empty
+          echo "::endgroup::"
+
           git push public "$BRANCH"
 
-      - name: Open PR on public
+      - name: Comment on staging release PR if cherry-pick failed
+        if: failure() && steps.check.outputs.skip != 'true' && steps.cherrypick.outputs.failed_sha != ''
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_NUMBER: ${{ steps.resolve.outputs.pr_number }}
+        run: |
+          gh pr comment "$PR_NUMBER" --repo alivecontext/alive-staging --body "$(cat <<EOF
+          **Promote aborted: cherry-pick conflict.**
+
+          Failed cherry-pick: staging PR #${{ steps.cherrypick.outputs.failed_pr }} (\`${{ steps.cherrypick.outputs.failed_sha }}\`)
+          Conflicted files: \`${{ steps.cherrypick.outputs.failed_files }}\`
+
+          The whole release batch was aborted (per policy). To recover:
+
+          1. Inspect the conflicting files. Conflicts on a multi-PR release usually mean a missing back-promote (a public-direct change isn't on staging). Run \`mirror-public.yml\` first to bring public commits to staging.
+          2. Once resolved, remove and re-add the \`promote\` label on this PR to retrigger.
+          EOF
+          )"
+
+      - name: Open public release PR
+        id: openpr
         if: steps.check.outputs.skip != 'true'
         env:
           GH_TOKEN: ${{ secrets.PROMOTE_TOKEN }}
         run: |
-          PR_NUMBER="${{ steps.resolve.outputs.pr_number }}"
           BRANCH="${{ steps.check.outputs.branch }}"
-          PR_TITLE="${{ steps.resolve.outputs.pr_title }}"
-          PR_URL="${{ steps.resolve.outputs.pr_url }}"
-          MERGE_SHA="${{ steps.resolve.outputs.merge_sha }}"
-
-          STAGING_BODY_FILE="${{ steps.resolve.outputs.body_file }}"
+          VERSION="${{ steps.resolve.outputs.version }}"
+          STAGING_PR="${{ steps.resolve.outputs.pr_number }}"
+          STAGING_URL="${{ steps.resolve.outputs.pr_url }}"
+          BLOCK_FILE="${{ steps.scope.outputs.block_file }}"
 
           body=$(mktemp)
           {
-            echo "Promoted from staging PR [#${PR_NUMBER}](${PR_URL}) (merge commit \`${MERGE_SHA:0:12}\`). Description below is the author's original staging PR body, verbatim."
+            cat "$BLOCK_FILE"
             echo ""
             echo "---"
             echo ""
-            if [ -s "$STAGING_BODY_FILE" ]; then
-              cat "$STAGING_BODY_FILE"
-            else
-              echo "*Source PR had no description.*"
-            fi
-            echo ""
-            echo ""
-            echo "---"
-            echo "*Automated by \`promote-labeled-pr.yml\` on alive-staging. Triggered by the \`promote\` label on the source PR.*"
+            echo "*Promoted from staging release [#${STAGING_PR}](${STAGING_URL}). Generated by \`promote-labeled-pr.yml\`.*"
           } > "$body"
 
-          gh pr create \
+          PUBLIC_PR_URL=$(gh pr create \
             --repo alivecontext/alive \
             --base main \
             --head "$BRANCH" \
-            --title "promote: ${PR_TITLE} (staging #${PR_NUMBER})" \
-            --body-file "$body"
+            --title "v${VERSION}" \
+            --body-file "$body")
+          PUBLIC_PR_NUMBER=$(echo "$PUBLIC_PR_URL" | sed -E 's|.*/pull/([0-9]+)$|\1|')
+
+          echo "public_pr_url=$PUBLIC_PR_URL"       >> "$GITHUB_OUTPUT"
+          echo "public_pr_number=$PUBLIC_PR_NUMBER" >> "$GITHUB_OUTPUT"
+
+      - name: Re-label staging release PR (stage:public-pr-open)
+        if: steps.check.outputs.skip != 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_NUMBER: ${{ steps.resolve.outputs.pr_number }}
+          REPO: ${{ github.repository }}
+        run: |
+          gh pr edit "$PR_NUMBER" --repo "$REPO" \
+            --add-label "stage:public-pr-open" \
+            --remove-label "stage:on-main" \
+            --remove-label "stage:wip" \
+            --remove-label "stage:promotion-ready" || true
+
+      - name: Append graduation-log rows on staging main
+        if: steps.check.outputs.skip != 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          VERSION="${{ steps.resolve.outputs.version }}"
+          STAGING_PR="${{ steps.resolve.outputs.pr_number }}"
+          STAGING_URL="${{ steps.resolve.outputs.pr_url }}"
+          STAGING_TITLE="${{ steps.resolve.outputs.pr_title }}"
+          STAGING_SHA="${{ steps.resolve.outputs.merge_sha }}"
+          PUBLIC_PR_URL="${{ steps.openpr.outputs.public_pr_url }}"
+          PUBLIC_PR_NUMBER="${{ steps.openpr.outputs.public_pr_number }}"
+          ORDERED="${{ steps.order.outputs.ordered }}"
+
+          git fetch origin main
+          git checkout main
+          git reset --hard origin/main
+
+          mkdir -p docs
+          if [ ! -f docs/graduation-log.md ]; then
+            {
+              echo "# Graduation log"
+              echo ""
+              echo "Pairings of staging PRs to public release PRs as they ship."
+              echo "Appended automatically by \`promote-labeled-pr.yml\`."
+              echo ""
+              echo "| Date (UTC) | Version | Staging PR | Public PR | Staging merge | State |"
+              echo "|---|---|---|---|---|---|"
+            } > docs/graduation-log.md
+          fi
+
+          DATE_UTC=$(date -u +%Y-%m-%d)
+
+          # One row for each cherry-picked source PR.
+          if [ -s "$ORDERED" ]; then
+            while IFS=$'\t' read -r TS N SHA URL TITLE; do
+              [ -z "$SHA" ] && continue
+              SAFE_TITLE=$(printf '%s' "$TITLE" | sed 's/|/\\|/g')
+              ROW="| ${DATE_UTC} | v${VERSION} | [#${N}](${URL}) ${SAFE_TITLE} | [#${PUBLIC_PR_NUMBER}](${PUBLIC_PR_URL}) | \`${SHA:0:12}\` | public-pr-open |"
+              printf '%s\n' "$ROW" >> docs/graduation-log.md
+            done < "$ORDERED"
+          fi
+
+          # And one row for the release PR itself.
+          SAFE_RELEASE_TITLE=$(printf '%s' "$STAGING_TITLE" | sed 's/|/\\|/g')
+          ROW="| ${DATE_UTC} | v${VERSION} | [#${STAGING_PR}](${STAGING_URL}) ${SAFE_RELEASE_TITLE} | [#${PUBLIC_PR_NUMBER}](${PUBLIC_PR_URL}) | \`${STAGING_SHA:0:12}\` | public-pr-open (release) |"
+          printf '%s\n' "$ROW" >> docs/graduation-log.md
+
+          git add docs/graduation-log.md
+          git commit -m "log: graduate v${VERSION} -> public #${PUBLIC_PR_NUMBER}" \
+            -m "Automated by promote-labeled-pr.yml. State: public-pr-open."
+          for attempt in 1 2 3; do
+            if git push origin main; then
+              exit 0
+            fi
+            echo "Push attempt $attempt failed; rebasing on latest origin/main and retrying"
+            git fetch origin main
+            git rebase origin/main
+          done
+          echo "::error::Failed to push graduation-log row after 3 attempts"
+          exit 1

@@ -1,0 +1,34 @@
+# Pre-commit hooks for the alive-staging repo.
+#
+# Currently scoped to the codex-marker provenance check that the v3.2 release
+# branch gated on (fn-21.1). Hook surface stays minimal until additional
+# checks are explicitly proposed.
+
+repos:
+  - repo: local
+    hooks:
+      - id: no-codex-round-comments
+        name: no Codex/Claude review-round provenance comments
+        description: >
+          Block re-introduction of "Codex round N" / "Claude round N" /
+          "GPT-N round" / similar PR-iteration provenance comments under
+          plugins/alive/scripts/system_upgrade/ and plugins/alive/tests/.
+          These comments are scar tissue from review iteration and add no
+          long-term value.
+        # Pattern MUST match the CI grep gate in
+        # .github/workflows/alive-staging-ci.yml exactly. ``gpt-?\d+`` (one or
+        # more digits) so "GPT-12 round" is caught locally too.
+        entry: '(?i)\b(codex|claude|gpt-?\d+)\s+(round|pass|iteration|review)\b'
+        language: pygrep
+        types_or: [python, markdown]
+        files: ^plugins/alive/(scripts/system_upgrade|tests)/
+        # Excludes match the in-scope fixture / template subtrees (the CI gate
+        # uses ``--exclude-dir=fixtures --exclude-dir=templates`` which apply
+        # globally to scanned roots). The skills/ tree is OUT of scope already
+        # (``files`` filter doesn't include it) so no exclusion is needed for
+        # it — listing it would be misleading.
+        exclude: |
+          (?x)^(
+            plugins/alive/tests/(?:.*/)?fixtures/.*
+            | plugins/alive/(?:scripts/system_upgrade|tests)/(?:.*/)?templates/.*
+          )$

@@ -67,9 +67,6 @@ Entry format:
 ### Artifacts
 - [files created/modified]
 
-### Next
-[single next action]
-
 signed: squirrel:[session_id]
 ```
 
@@ -81,14 +78,28 @@ Write to the active bundle's `context.manifest.yaml`:
 
 ## Route Tasks
 
-Use `tasks.py` via terminal:
+Confirmed task-shaped stash items are promoted in a single batch via `alive tasks promote` after the squirrel YAML stash is written. The CLI walks each `type: task` stash item, writes the task row, and stamps `promotion_state` / `task_id` markers back onto the squirrel file under a single flock for crash safety.
 
 ```bash
-python3 .alive/scripts/tasks.py add --walnut "[path]" --title "[task]" --priority "[priority]"
-python3 .alive/scripts/tasks.py done --walnut "[path]" --id "[task_id]"
+"$ALIVE_PLUGIN_ROOT/bin/alive" tasks promote \
+  --squirrel "[session_id]" \
+  --walnut "[path]"
 ```
 
-Never read or write tasks.json directly.
+Python fallback if `bin/alive` is missing:
+
+```bash
+"${ALIVE_PYTHON:-python3}" "$ALIVE_PLUGIN_ROOT/scripts/cli.py" tasks promote \
+  --squirrel "[session_id]" --walnut "[path]"
+```
+
+For non-promotion edits on existing tasks (mark done, change priority), use `tasks.py` directly:
+
+```bash
+python3 "$ALIVE_PLUGIN_ROOT/scripts/tasks.py" done --walnut "[path]" --id "[task_id]"
+```
+
+Never read or write tasks.json directly. Fail-loud if the CLI binary is missing on both paths — do not fall back to per-item adds from the agent.
 
 ## Route People
 

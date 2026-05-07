@@ -31,9 +31,6 @@ summary: {{name}} created.
      ### Quotes
      - "Verbatim quote worth keeping" — attribution
 
-     ### Next
-     - What the next squirrel should pick up (feeds into now.md next:)
-
      signed: squirrel:session_id
 
      RULES:

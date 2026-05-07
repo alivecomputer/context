@@ -1,0 +1,8 @@
+#!/usr/bin/env bash
+# ALIVE Context System -- agent-facing CLI entry point.
+# Self-locating: resolves plugin root from BASH_SOURCE so no env var required.
+# Delegates to scripts/cli.py. Override the Python interpreter with ALIVE_PYTHON.
+set -euo pipefail
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PLUGIN_ROOT="$(dirname "$SCRIPT_DIR")"
+exec "${ALIVE_PYTHON:-python3}" "$PLUGIN_ROOT/scripts/cli.py" "$@"

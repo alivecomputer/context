@@ -295,14 +295,13 @@ Fail conditions:
 
 **Fix guidance:** When the human picks "rewrite now", suggest running `project.py --walnut {path}` to regenerate now.json from current sources. If the log itself is stale, note that project.py will produce a stale projection and suggest a manual log entry first.
 
-### 3e. now.json next: Validation
+### 3e. Urgent task validation
 
-Read `_kernel/now.json` `next:` field. Use `tasks.py list --walnut {path} --priority urgent` to get urgent tasks. Check:
-- `next:` is not empty
-- `next:` is not a template placeholder
-- If any tasks have urgent priority, does `next:` align with the top urgent task? Flag conflicts.
+Use `tasks.py list --walnut {path} --priority urgent` to get urgent tasks. Check:
+- At least one urgent or active task exists, OR the walnut is in a phase that doesn't need open work (e.g. `paused`, `archived`, `published`).
+- No urgent task has been sitting untouched longer than the walnut's rhythm window (flag stale urgent items).
 
-Pass: next is set and doesn't conflict with urgent tasks. Fail: missing, empty, or conflicting.
+Pass: there is a credible top-of-mind action, or the walnut is legitimately at rest. Fail: nothing urgent, nothing active, and the walnut is not paused or archived.
 
 ### 3f. Log Health
 
@@ -447,7 +446,7 @@ Present all 12 results together. Passing checks collapsed, failures listed.
 │  ✓ 3b. walnut skeleton       — complete (6/6 kernel files)
 │  ⚠ 3c. key.md completeness   — links: [] but body references 4 people
 │  ✓ 3d. now.json zero-context — pass
-│  ✓ 3e. now.json next:        — set, aligns with tasks
+│  ✓ 3e. urgent task           — top urgent task fresh, aligns with phase
 │  ✓ 3f. log health            — ordered, signed, counts match
 │  ✓ 3g. stale rhythm          — active
 │  ✓ 3h. bundles               — all manifests valid

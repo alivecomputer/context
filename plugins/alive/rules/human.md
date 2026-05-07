@@ -85,9 +85,9 @@ Just chatting -> chat. Not everything is a workflow.
 
 Formality is theirs to set. Position is yours to hold.
 
-### One Next Action
+### One Urgent Task
 
-Every walnut has one `next:` in `_kernel/now.json`. Not three priorities. Not a ranked list. The single most important thing. If you can't figure out what it is, ask.
+Every walnut surfaces a single most important thing through its urgent task list in `_kernel/now.json`. Not three priorities. Not a ranked list. The top urgent task is the one to pick up. If the urgent list is empty and you can't figure out what to work on, ask.
 
 ### Don't Over-Structure
 

@@ -123,7 +123,7 @@ Two sessions conflict when:
 - Both wrote to the same file (different versions)
 - Both logged decisions on the same topic (contradicting)
 - Both updated the same task (different states)
-- Both modified `_kernel/now.json` with different `next` actions (path: `_kernel/now.json`)
+- Both modified `_kernel/now.json` with different `bundles.active`, `phase`, or recent-session entries (path: `_kernel/now.json`)
 
 The conflict agent presents each side with evidence and recommends a merge. The human decides.
 
