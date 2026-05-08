@@ -149,6 +149,97 @@ migrate_legacy_to_alive() {
 # T1's per-OS unmount detection runs inside is_valid_world_root /
 # validate_world_root before any path-following stat.
 #
+# fn-25: Surface-gated cwd-vs-config divergence detector.
+#
+# Called from find_world AFTER a successful tier-2 (config-file) resolve.
+# When the user is standing in a valid world that differs from the world
+# resolved from the config file, sets:
+#   WORLD_ROOT_ADVISORY_REASON=cwd_config_divergence
+#   WORLD_ROOT_DIVERGENT_CWD_PATH=<cwd-walked-up world>
+# Resolver still returns the config-resolved world unchanged (config wins;
+# advisory is informational).
+#
+# Surface gate (locked):
+#   * Runs only when CLAUDE_CODE_HOOK_EVENT=SessionStart OR
+#     ALIVE_RESOLVER_DIVERGENCE_CHECK=1.
+#   * Default off. SessionResume / non-CC surfaces (alive-mcp, Hermes,
+#     Codex) pay zero overhead and never see the advisory.
+#
+# Skip-conditions inside the detector itself:
+#   * cwd walk-up finds nothing valid -> no advisory (the canonical
+#     "user opens Claude in ~/Downloads" case).
+#   * cwd-resolved == config-resolved -> no advisory (everything aligns).
+#   * cwd-resolved is validate_path_choice=deny -> no advisory (the user
+#     accidentally cd'd into /private/var/folders/.alive or similar; the
+#     doctor --fix path would refuse the write anyway, so don't waste a
+#     SessionStart prompt on it).
+#   * cwd-resolved is confirm_required (home or cloud) -> STILL fires the
+#     advisory; the user can decide via doctor with --allow-home /
+#     --allow-cloud at fix time.
+#
+# Args: $1 = config-resolved world root (the value find_world is about to
+#            return on the success path).
+# Returns: always 0 (advisory is best-effort; never fail the resolve).
+_alive_detect_cwd_config_divergence() {
+  local config_world="$1"
+
+  # Surface gate. SessionResume is intentionally NOT in the SessionStart
+  # branch (resume is mid-flight; divergence has no actionable meaning).
+  case "${CLAUDE_CODE_HOOK_EVENT:-}" in
+    SessionStart) ;;
+    *)
+      if [ "${ALIVE_RESOLVER_DIVERGENCE_CHECK:-}" != "1" ]; then
+        return 0
+      fi
+      ;;
+  esac
+
+  # Walk up from cwd looking for a valid world. Mirrors tier-3a's lexical
+  # normalization + predicate but does NOT honor cowork mount-scan
+  # (cowork worlds are launcher-picked, not user-cwd-picked).
+  local dir="${HOOK_CWD:-${CLAUDE_PROJECT_DIR:-$PWD}}"
+  local check_raw="$dir"
+  local cwd_world=""
+  local cwd_decision=""
+  while [ -n "$check_raw" ] && [ "$check_raw" != "/" ]; do
+    local check_norm
+    if check_norm="$(lexical_normalize_path "$check_raw" 2>/dev/null)" \
+        && [ -n "$check_norm" ] \
+        && is_valid_world_root "$check_norm"; then
+      local choice decision
+      choice="$(validate_path_choice "$check_norm")"
+      decision="${choice%%	*}"
+      cwd_world="$check_norm"
+      cwd_decision="$decision"
+      break
+    fi
+    local parent
+    parent="$(dirname -- "$check_raw")"
+    if [ "$parent" = "$check_raw" ]; then
+      break
+    fi
+    check_raw="$parent"
+  done
+
+  # No valid world up the cwd chain -> nothing to flag.
+  [ -z "$cwd_world" ] && return 0
+
+  # Skip deny: validate_path_choice already refuses to anchor here, so
+  # surfacing a "switch to it" prompt would lead the user nowhere.
+  [ "$cwd_decision" = "deny" ] && return 0
+
+  # Same world -> no divergence (config IS the cwd-resolved world).
+  if [ "$cwd_world" = "$config_world" ]; then
+    return 0
+  fi
+
+  # Real divergence: surface it via the advisory channel. Resolver still
+  # returns the config-resolved world (caller-side WORLD_ROOT unchanged).
+  export WORLD_ROOT_ADVISORY_REASON="cwd_config_divergence"
+  export WORLD_ROOT_DIVERGENT_CWD_PATH="$cwd_world"
+  return 0
+}
+
 # Sets: WORLD_ROOT on success; returns 1 on fail (with reason as above).
 find_world() {
   # Clear any prior resolver state on the in-process surface. WORLD_ROOT
@@ -162,6 +253,11 @@ find_world() {
   # never reads a value left over from a previous call.
   unset WORLD_ROOT WORLD_ROOT_FAIL_REASON WORLD_ROOT_ADVISORY_REASON
   unset WORLD_ROOT_STALE_PATH WORLD_ROOT_STALE_STATUS
+  # fn-25: divergence-detection state (post-tier-2 cwd-vs-config check).
+  # Cleared on entry alongside fail/advisory state so a prior call's
+  # divergent-cwd export cannot leak into a later resolve in the same
+  # process. Population is gated; absence here is the normal case.
+  unset WORLD_ROOT_DIVERGENT_CWD_PATH
 
   # ---- Tier 1: env override ----
   if [ -n "${ALIVE_WORLD_ROOT_OVERRIDE:-}" ]; then
@@ -200,6 +296,8 @@ find_world() {
     if [ "$alive_status" = "ok" ]; then
       WORLD_ROOT="$alive_norm"
       migrate_legacy_to_alive "$WORLD_ROOT" || true
+      # fn-25: surface-gated cwd-vs-config divergence advisory.
+      _alive_detect_cwd_config_divergence "$WORLD_ROOT"
       return 0
     fi
     # File present but world is gone -- fail loud rather than silently
@@ -243,6 +341,14 @@ find_world() {
       fi
       WORLD_ROOT="$walnut_norm"
       migrate_legacy_to_alive "$WORLD_ROOT" || true
+      # fn-25: surface-gated cwd-vs-config divergence advisory. Skipped
+      # when migration_write_failed is already set so the advisory channel
+      # surfaces the migration failure (the more actionable signal) rather
+      # than overwriting it with a divergence prompt the user cannot heal
+      # via --fix until the alive config dir is writable again.
+      if [ -z "${WORLD_ROOT_ADVISORY_REASON:-}" ]; then
+        _alive_detect_cwd_config_divergence "$WORLD_ROOT"
+      fi
       return 0
     fi
     # Legacy file present but stale: fail loud, do NOT migrate the
@@ -1260,6 +1366,16 @@ _alive_advisory_message() {
   case "$reason" in
     migration_write_failed)
       printf 'ALIVE: legacy walnut config-file migration write failed. Using the legacy ~/.config/walnut/world-root for this session. Run `%s doctor --check=world-root --fix` to retry, or check permissions on ~/.config/alive/.\n' "$doctor"
+      ;;
+    cwd_config_divergence)
+      # fn-25: cwd walks up to a different valid world than the
+      # config-resolved one. Both paths are user-facing. Restart-after-fix
+      # is mandatory copy: --fix updates the config file but the
+      # currently-loaded world stays bound to the old config until the
+      # next session start re-runs find_world.
+      local divergent_cwd="${WORLD_ROOT_DIVERGENT_CWD_PATH:-}"
+      local config_world="${WORLD_ROOT:-}"
+      printf 'You are working inside %s, but ALIVE loaded %s from your config. Run `%s doctor --check=world-root --fix` and restart Claude Code to switch your config to the world you are standing in, or proceed with the loaded world.\n' "$divergent_cwd" "$config_world" "$doctor"
       ;;
     *)
       # Future advisory reasons land here. Empty echo means no hint

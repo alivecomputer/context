@@ -434,6 +434,27 @@ Model: $HOOK_MODEL
 $PREFS
 Rules: ${RULE_COUNT} loaded (${RULE_NAMES})${MIGRATION_MSG}${UPGRADE_NEEDED}"
 
+# fn-25: cwd-vs-config divergence advisory.
+#
+# When find_world succeeded but the user's cwd walks up to a different
+# valid world, surface a bordered-block notice at the top of
+# additional_context. The advisory state was set by
+# _alive_detect_cwd_config_divergence in alive-common.sh during the
+# find_world call above (gated on $CLAUDE_CODE_HOOK_EVENT=SessionStart).
+#
+# Fires every gated session-start that detects divergence (no day-sentinel
+# suppression). Restart-after-fix copy is mandatory: --fix writes the new
+# config but the loaded world for THIS session does not change.
+DIVERGENCE_NOTICE=""
+if [ "${WORLD_ROOT_ADVISORY_REASON:-}" = "cwd_config_divergence" ]; then
+  DIVERGENCE_BODY=$(_alive_advisory_message "cwd_config_divergence")
+  if [ -n "$DIVERGENCE_BODY" ]; then
+    DIVERGENCE_NOTICE="╭─ 🐿️ world-root mismatch
+│  ${DIVERGENCE_BODY}
+╰─"
+  fi
+fi
+
 # Escape and combine -- world key + index + bundle awareness + tidy nudge + rules
 WORLD_KEY_ESCAPED=$(escape_for_json "$WORLD_KEY_CONTENT")
 INDEX_ESCAPED=""
@@ -458,6 +479,13 @@ if [ -n "$TIDY_ESCAPED" ]; then
   CONTEXT="${CONTEXT}\n\n${TIDY_ESCAPED}"
 fi
 CONTEXT="${CONTEXT}\n\n${PREAMBLE_ESCAPED}\n\n${RUNTIME_ESCAPED}"
+# fn-25: prepend the divergence bordered block so the user sees the
+# cwd-vs-config mismatch BEFORE the bulk of the rules dump rather than
+# buried at the bottom of additionalContext.
+if [ -n "$DIVERGENCE_NOTICE" ]; then
+  DIVERGENCE_ESCAPED=$(escape_for_json "$DIVERGENCE_NOTICE")
+  CONTEXT="${DIVERGENCE_ESCAPED}\n\n${CONTEXT}"
+fi
 
 # Output JSON with additionalContext
 cat <<HOOKEOF

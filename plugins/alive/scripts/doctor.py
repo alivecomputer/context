@@ -458,7 +458,24 @@ def check_world_root(walnut, cwd=None):
                 "no cwd available and no --walnut provided",
                 hint=_WORLD_ROOT_FAIL_RECOVERY,
             )
-    root, strategy = find_world_root_with_strategy(start)
+    # fn-25: open the surface gate while running the resolver from the
+    # doctor surface. Without this, ``alive doctor --check=world-root``
+    # invocations from a TTY would never run the cwd walk-up (the
+    # CLAUDE_CODE_HOOK_EVENT env var is only set by Claude Code's hook
+    # surface), so a user running ``alive doctor`` directly to triage
+    # divergence would see ``degraded: false`` even when standing in a
+    # different valid world. Opening the explicit-opt-in flag makes the
+    # doctor command authoritative for its own diagnosis. Restored on
+    # exit so we don't leak the flag to other helpers in the same process.
+    prior_gate = os.environ.get("ALIVE_RESOLVER_DIVERGENCE_CHECK")
+    os.environ["ALIVE_RESOLVER_DIVERGENCE_CHECK"] = "1"
+    try:
+        root, strategy = find_world_root_with_strategy(start)
+    finally:
+        if prior_gate is None:
+            os.environ.pop("ALIVE_RESOLVER_DIVERGENCE_CHECK", None)
+        else:
+            os.environ["ALIVE_RESOLVER_DIVERGENCE_CHECK"] = prior_gate
     if root is None:
         # ``strategy`` here carries the WORLD_ROOT_FAIL_REASON taxonomy
         # (not_found / stale_config / invalid_override / denied_home).
@@ -480,6 +497,19 @@ def check_world_root(walnut, cwd=None):
     # The double pass is idempotent on the current three live ids.
     canonical = _resolve_deprecated_label(canonical_strategy(strategy))
     label = _STRATEGY_LABELS.get(canonical, canonical)
+
+    # fn-25: pick up the divergence advisory side channel populated by
+    # the resolver (``_common._detect_cwd_config_divergence``). The
+    # advisory is set ONLY after a tier-2 success when the cwd walks up
+    # to a different valid world. Surface it with a STATUS_WARN so the
+    # default-mode summary reports degraded:true and the user knows they
+    # have a config-vs-cwd mismatch worth healing.
+    divergence_detected = (
+        os.environ.get("WORLD_ROOT_ADVISORY_REASON")
+        == "cwd_config_divergence"
+    )
+    divergent_cwd = os.environ.get("WORLD_ROOT_DIVERGENT_CWD_PATH") or None
+
     if canonical == WORLD_ROOT_STRATEGY_BOOTSTRAP:
         # Bootstrap-resolves is advisory: the world resolves today via
         # cwd walk-up but moving cwd / running outside any walnut would
@@ -493,6 +523,23 @@ def check_world_root(walnut, cwd=None):
                 "this world-root via ~/.config/alive/world-root"
             ),
         )
+    elif divergence_detected and divergent_cwd:
+        # Config-resolved successfully BUT cwd is in a different valid
+        # world. Surface as warn (degraded but not broken) and steer the
+        # user toward the doctor --fix self-heal path. The detail copy
+        # names both paths verbatim per the locked acceptance.
+        result = _check_result(
+            "world-root",
+            STATUS_WARN,
+            "cwd-vs-config divergence: cwd is in {}, config resolved {}: {}".format(
+                divergent_cwd, label, root
+            ),
+            hint=(
+                "Run `alive doctor --check=world-root --fix` and "
+                "restart Claude Code to switch the config to the world "
+                "you are standing in"
+            ),
+        )
     else:
         result = _check_result(
             "world-root",
@@ -501,6 +548,16 @@ def check_world_root(walnut, cwd=None):
         )
     result["root"] = root
     result["strategy"] = canonical
+    if divergence_detected and divergent_cwd:
+        # fn-25: structured divergence info for JSON consumers. Sibling
+        # to ``detail`` (which stays a string) so the existing schema
+        # contract is preserved; agents that parse divergence specifically
+        # destructure ``check.divergence``.
+        result["divergence"] = {
+            "divergence": True,
+            "config_resolved": root,
+            "cwd_resolved": divergent_cwd,
+        }
     return result
 
 
@@ -1272,6 +1329,62 @@ def _handle_fix_after_check(result, json_mode):
         _maybe_attach_migration_hint(payload)
         _emit(payload, json_mode, _render_text_fix)
         return 1
+
+    # fn-25: divergence self-heal. When the resolver flagged a
+    # cwd-vs-config divergence (config-file strategy succeeded but cwd
+    # walks up to a different valid world), --fix writes the cwd-resolved
+    # world to ~/.config/alive/world-root. Restart-after-fix is part of
+    # the user contract and surfaces in the detail copy: the CURRENT
+    # session continues running against the OLD config-resolved world
+    # until the next session start re-runs find_world.
+    divergence_info = result.get("divergence") or {}
+    if (
+        strategy == WORLD_ROOT_STRATEGY_CONFIG_FILE
+        and divergence_info.get("divergence")
+    ):
+        cwd_resolved = divergence_info.get("cwd_resolved")
+        config_resolved = divergence_info.get("config_resolved") or root
+        if not cwd_resolved:
+            # Defensive: divergence flag was set but cwd path is empty.
+            # Fall through to the no-op branch rather than write garbage.
+            pass
+        else:
+            try:
+                write_world_root_file(cwd_resolved)
+            except (OSError, ValueError) as exc:
+                payload = {
+                    "error": (
+                        "failed to write ~/.config/alive/world-root: {}"
+                        .format(exc)
+                    ),
+                    "hint": (
+                        "check that ~/.config/alive/ is writable; rerun "
+                        "with --world-root <path> to bypass any stale state"
+                    ),
+                }
+                _emit(payload, json_mode, _render_text_error)
+                return 1
+            payload = {
+                "fix": {
+                    "action": "wrote-config-file",
+                    "ok": True,
+                    "detail": (
+                        "Updated ~/.config/alive/world-root: {} -> {}. "
+                        "Restart Claude Code for the new config to take "
+                        "effect."
+                    ).format(config_resolved, cwd_resolved),
+                    "path": cwd_resolved,
+                    "previous_path": config_resolved,
+                },
+                "check": result,
+                # ``degraded`` mirrors the embedded check (still warn at
+                # the moment the fix ran). The next invocation will
+                # report STATUS_OK with no divergence flag.
+                "degraded": result["status"] != STATUS_OK,
+            }
+            _maybe_attach_migration_hint(payload)
+            _emit(payload, json_mode, _render_text_fix)
+            return 0
 
     if strategy in (
         WORLD_ROOT_STRATEGY_OVERRIDE,

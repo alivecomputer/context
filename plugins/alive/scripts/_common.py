@@ -372,6 +372,105 @@ def _normalize_lexically(raw):
         return None
 
 
+#: Advisory reason name for the cwd-vs-config divergence channel.
+#: Locked in lockstep with the bash sibling
+#: (``alive-common.sh::_alive_detect_cwd_config_divergence``) so cross-impl
+#: tests can assert byte-equal advisory state.
+WORLD_ROOT_ADVISORY_CWD_CONFIG_DIVERGENCE = "cwd_config_divergence"
+
+
+def _surface_gate_permits_divergence_check():
+    """Return True iff the surface gate currently permits the cwd walk-up.
+
+    Locked gate (Bash + Python parity): runs only when
+    ``$CLAUDE_CODE_HOOK_EVENT=SessionStart`` OR
+    ``$ALIVE_RESOLVER_DIVERGENCE_CHECK=1``. Default off so non-Claude-Code
+    surfaces (alive-mcp, Hermes, Codex, future native clients) pay zero
+    overhead and never see the advisory. ``SessionResume`` is intentionally
+    NOT included -- resume continues against the already-loaded world and
+    surfacing divergence mid-flight has no actionable meaning.
+    """
+    if os.environ.get("CLAUDE_CODE_HOOK_EVENT") == "SessionStart":
+        return True
+    if os.environ.get("ALIVE_RESOLVER_DIVERGENCE_CHECK") == "1":
+        return True
+    return False
+
+
+def _detect_cwd_config_divergence(config_world, walnut_path):
+    """Set the divergence advisory env channel when cwd != config-world.
+
+    Called from ``find_world_root_with_strategy`` AFTER a successful
+    tier-2 (config-file) resolve. Walks ``walnut_path`` (or cwd) up via
+    ``is_valid_world_root`` looking for a valid world; if found AND it
+    differs from ``config_world`` AND ``validate_path_choice`` does not
+    return ``deny`` for it, sets:
+
+        os.environ["WORLD_ROOT_ADVISORY_REASON"] = "cwd_config_divergence"
+        os.environ["WORLD_ROOT_DIVERGENT_CWD_PATH"] = <cwd-resolved world>
+
+    Skip-conditions (no advisory):
+      * Surface gate closed (default for non-CC callers).
+      * cwd walk-up finds nothing valid.
+      * cwd-resolved == config-resolved.
+      * cwd-resolved is ``deny`` (system roots, ``/private/var/folders``).
+        ``confirm_required`` (home / cloud) DOES surface the advisory; the
+        user can decide via doctor with ``--allow-home`` / ``--allow-cloud``
+        at fix time.
+
+    Best-effort: any exception is swallowed (no advisory). Never raises.
+    """
+    if not _surface_gate_permits_divergence_check():
+        return
+
+    # Local imports to keep the cold-start cost on the success path bounded
+    # to the actual divergence-check work.
+    try:
+        from _world_root_io import (  # noqa: PLC0415
+            is_valid_world_root,
+            validate_path_choice,
+        )
+    except ImportError:
+        return
+
+    raw_start = os.fspath(walnut_path) if walnut_path else os.getcwd()
+    start = _normalize_lexically(raw_start)
+    if start is None:
+        # Unnormalizable input: same defensive default as tier-3 below.
+        start = os.path.abspath(os.path.expanduser(raw_start))
+
+    cwd_world = None
+    cwd_decision = None
+    current = start
+    while current and current != "/":
+        candidate = _normalize_lexically(current) or current
+        try:
+            if is_valid_world_root(candidate):
+                decision = validate_path_choice(candidate)
+                cwd_world = candidate
+                cwd_decision = decision.decision
+                break
+        except (OSError, ValueError):
+            # Fail-soft: skip candidates that the predicate rejects.
+            pass
+        parent = os.path.dirname(current)
+        if parent == current:
+            break
+        current = parent
+
+    if cwd_world is None:
+        return
+    if cwd_decision == "deny":
+        return
+    if cwd_world == config_world:
+        return
+
+    os.environ["WORLD_ROOT_ADVISORY_REASON"] = (
+        WORLD_ROOT_ADVISORY_CWD_CONFIG_DIVERGENCE
+    )
+    os.environ["WORLD_ROOT_DIVERGENT_CWD_PATH"] = cwd_world
+
+
 def find_world_root_with_strategy(walnut_path):
     """Resolve world root and return ``(root, strategy)`` or ``(None, reason)``.
 
@@ -421,6 +520,19 @@ def find_world_root_with_strategy(walnut_path):
         validate_world_root,
     )
 
+    # fn-25: clear divergence advisory channel on entry (parity with the
+    # bash sibling's ``unset WORLD_ROOT_DIVERGENT_CWD_PATH`` at find_world
+    # entry). Prior calls cannot leak into this resolve. The
+    # WORLD_ROOT_ADVISORY_REASON channel is shared with migration_write_failed
+    # and is managed by ``read_world_root_file``; we defer to it for that
+    # value but ensure stale divergence path state is never observed.
+    os.environ.pop("WORLD_ROOT_DIVERGENT_CWD_PATH", None)
+    if (
+        os.environ.get("WORLD_ROOT_ADVISORY_REASON")
+        == WORLD_ROOT_ADVISORY_CWD_CONFIG_DIVERGENCE
+    ):
+        os.environ.pop("WORLD_ROOT_ADVISORY_REASON", None)
+
     # ---- Tier 1: env override -----------------------------------------
     override_raw = os.environ.get("ALIVE_WORLD_ROOT_OVERRIDE")
     if override_raw:
@@ -452,7 +564,21 @@ def find_world_root_with_strategy(walnut_path):
     if config_helper_error == "corrupt":
         return None, WORLD_ROOT_FAIL_STALE_CONFIG
     if config_helper_result is not None:
-        return str(config_helper_result), WORLD_ROOT_STRATEGY_CONFIG_FILE
+        config_world = str(config_helper_result)
+        # fn-25: surface-gated cwd-vs-config divergence advisory. Skipped
+        # when read_world_root_file already set migration_write_failed
+        # (the more actionable signal; user must heal the alive-config
+        # writability before any divergence --fix could land). The
+        # migration-failed channel is exported via WORLD_ROOT_FAIL_REASON
+        # by read_world_root_file (see _world_root_io.read_world_root_file)
+        # rather than WORLD_ROOT_ADVISORY_REASON, so that's where we read
+        # the discriminator from.
+        if (
+            os.environ.get("WORLD_ROOT_FAIL_REASON")
+            != "migration_write_failed"
+        ):
+            _detect_cwd_config_divergence(config_world, walnut_path)
+        return config_world, WORLD_ROOT_STRATEGY_CONFIG_FILE
 
     # Helper returned None: distinguish "absent" (falls through) from
     # "present but stale" (fail loud). Inspect the on-disk files
